@@ -60,6 +60,58 @@ SLIPPAGE_LIMIT       = 0.01    # 滑點保護：買賣價差 > 1%（零股市場
 MIN_ORDER_VALUE      = 11_000   # 最小下單金額（元）：確保手續費占比 < 0.1%，避免最低手續費侵蝕獲利
 
 
+# 正式交易雙重確認字串。長度刻意設計到「不可能不小心打對」的程度，
+# 唯一通過方式：使用者從 .env.example 或 SOP 文件複製貼上完整字串。
+REAL_MONEY_CONFIRMATION = "I_KNOW_THIS_IS_REAL_MONEY"
+
+
+def _parse_simulation_env() -> bool:
+    """
+    從環境變數讀取交易模式設定，**含雙重確認防呆機制**。
+
+    模擬模式判定 (回傳 True)：
+      - SIMULATION 未設定，或值為：true / 1 / yes / sim / simulation
+      - 任何無法識別的值（亂碼、中文、空白等）
+
+    正式模式判定 (回傳 False)，必須**同時滿足**：
+      1. SIMULATION 設為：false / 0 / no / real / production / prod
+      2. CONFIRM_REAL_MONEY 設為：I_KNOW_THIS_IS_REAL_MONEY（精確匹配，區分大小寫）
+
+    ⚠️ 多層安全網：
+      - 未設定 SIMULATION → 模擬
+      - SIMULATION 值無法識別 → 模擬
+      - SIMULATION=false 但 CONFIRM_REAL_MONEY 沒設 → 模擬 + 大警告
+      - SIMULATION=false 但 CONFIRM_REAL_MONEY 值錯誤 → 模擬 + 大警告
+      - 兩者皆正確 → 正式（會印出醒目紅色警告）
+    """
+    val = os.environ.get("SIMULATION", "").strip().lower()
+    real_values = {"false", "0", "no", "real", "production", "prod"}
+
+    # 第一層：SIMULATION 沒明確要求正式 → 直接回模擬
+    if val not in real_values:
+        return True
+
+    # 第二層：要切換正式必須通過雙重確認
+    confirm = os.environ.get("CONFIRM_REAL_MONEY", "").strip()
+    if confirm != REAL_MONEY_CONFIRMATION:
+        print("")
+        print("⚠️ " * 30)
+        print("⚠️  [防呆機制觸發] SIMULATION=false，但雙重確認未通過！")
+        print(f"⚠️  目前 CONFIRM_REAL_MONEY = {confirm!r}")
+        print(f"⚠️  需設定為                = {REAL_MONEY_CONFIRMATION!r}")
+        print("⚠️  ")
+        print("⚠️  為保護你的資金安全，**自動 fallback 到模擬交易模式**。")
+        print("⚠️  若確實要切換正式交易，請：")
+        print("⚠️    1. 本機：在 .env 加入 CONFIRM_REAL_MONEY=I_KNOW_THIS_IS_REAL_MONEY")
+        print("⚠️    2. GitHub Actions：在 Secrets 新增 CONFIRM_REAL_MONEY = 上述字串")
+        print("⚠️ " * 30)
+        print("")
+        return True
+
+    # 兩道關卡都通過：確認進入正式交易
+    return False
+
+
 def _business_days_between(start_date, end_date) -> int:
     """計算兩日期間的工作天數（不含週末，不考慮國定假日）"""
     if start_date >= end_date:
@@ -445,7 +497,20 @@ class AITradingBot:
     def __init__(self):
         _debug_env()
 
-        self._simulation = False   # ← 切換正式交易時改為 False
+        # 交易模式由環境變數 SIMULATION 控制（True=模擬 / False=正式）
+        # 安全預設：未設定環境變數時為 True（模擬），避免任何意外動用真實資金
+        # 切換正式交易方式：
+        #   - 本機：編輯 .env，加入 SIMULATION=false
+        #   - GitHub Actions：在 Repository Secrets 設定 SIMULATION=false
+        self._simulation = _parse_simulation_env()
+
+        if self._simulation:
+            print("[初始化] 🟢 交易模式：模擬交易（simulation=True，不動用真實資金）")
+        else:
+            print("[初始化] " + "=" * 60)
+            print("[初始化] 🔴 交易模式：正式交易（simulation=False，動用真實資金！）")
+            print("[初始化] " + "=" * 60)
+
         self.api = sj.Shioaji(simulation=self._simulation)
         print("[初始化] Shioaji 實例建立完成")
 
