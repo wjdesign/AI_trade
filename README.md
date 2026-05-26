@@ -243,6 +243,18 @@ D. 時間停損（TIME_STOP_MINUTES > 0 時啟用）
 
 0050 成分股流動性最佳，零股交易較容易成交。
 
+### LONG_TERM_HOLD 長線持有清單
+
+除了 `PINNED_STOCKS` 之外，[bot.py](bot.py) 還定義了 `LONG_TERM_HOLD`（位於 PINNED_STOCKS 之後），列在此清單的股票**不會被自動停損/停利監控**，由人工決定出場時機。適合基本面持股、核心持倉等不希望被短期波動觸發自動賣出的標的。
+
+**目前清單**：
+
+| 代碼 | 名稱 | 備註 |
+|------|------|------|
+| 0050 | 元大台灣50 | 長期核心持倉，包含台積電等優質藍籌 |
+
+> 💡 出場監控迴圈讀到 `code in LONG_TERM_HOLD` 時會直接跳過該部位（見 [bot.py:1909](bot.py#L1909)），這檔股票必須手動下單賣出。
+
 ---
 
 ## 回測引擎
@@ -347,11 +359,20 @@ uv run python backtest.py --code 2330,2454,1590 --start 2021-01-01 --yf
 
 > ⚠️ 正式交易會動用真實資金，請確認以下每一項再上線。
 
-### 必要程式碼變更（共 1 處）
+### 切換方式（透過環境變數，無需修改原始碼）
 
-| 檔案 | 行號 | 修改內容 |
-|------|------|---------|
-| `bot.py` | 339 | `sj.Shioaji(simulation=True)` → `sj.Shioaji(simulation=False)` |
+bot.py 透過 `_parse_simulation_env()` 讀取環境變數判斷模式，**必須同時設定下列兩個變數才會切換為正式交易**（任一缺漏自動 fallback 到模擬模式）：
+
+| 環境變數 / Secret | 模擬模式（預設） | 正式交易 |
+|------------------|----------------|---------|
+| `SIMULATION` | `true`（或未設定） | `false` |
+| `CONFIRM_REAL_MONEY` | （未設定） | `I_KNOW_THIS_IS_REAL_MONEY` |
+
+> 🔧 **本機執行**：在 `.env` 加上這兩行（參考 [.env.example](.env.example)）
+>
+> ☁️ **GitHub Actions**：到 Repo Settings → Secrets and variables → Actions 新增上述 2 個 Secret。完整設定流程見 [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md)。
+
+> ⚠️ **不要直接改 `bot.py` 程式碼**。`self._simulation` 的值由 `_parse_simulation_env()` 動態決定（位於 [bot.py:450](bot.py#L450) 附近），手改會被環境變數覆蓋。
 
 ### 環境設定確認
 
@@ -410,7 +431,7 @@ AI_trade/
 │   ├── __init__.py
 │   ├── client.py             # ShioajiClient 封裝類別
 │   ├── news.py               # 新聞聚合器（鉅亨網 / Yahoo / Google News）
-│   ├── scanner.py            # 三層漏斗掃描器（備用，bot.py 已不使用）
+│   ├── scanner.py            # 三層漏斗掃描器 — bot.py 每日 09:20 觸發一次，動態加入最多 5 檔當日強勢股至 watch_list
 │   ├── strategy.py           # 多策略框架（StrategyAllocator）
 │   └── chips.py              # 籌碼流向分析（智能日期回溯）
 ├── pyproject.toml            # 套件設定
