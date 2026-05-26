@@ -1,4 +1,15 @@
 .env
+.env.*
+!.env.example
+
+# 永豐金 CA 憑證 — 絕對不可 commit（含密鑰，會被永豐金後台拒絕後仍可被分析）
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -7,3 +18,8 @@ venv/
 dist/
 *.egg-info/
 .pytest_cache/
+
+# Logs / artifacts
+logs/
+shioaji.log
+*.log
