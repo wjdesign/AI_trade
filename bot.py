@@ -1,9 +1,12 @@
 """
 AI 模擬交易機器人
-- 模式：simulation=True（模擬盤，不動用真實資金）
-- 策略：大盤月線過濾 + OpenAI 情緒分析 + VWAP 進場
-        + 滑點保護 + 移動止盈 + 2% 強制止損
-- 支援：多標的同時監控，最多 MAX_POSITIONS 個部位
+- 模式：由 SIMULATION 環境變數決定，預設模擬盤（不動用真實資金）；
+        正式交易需同時設 SIMULATION=false 與 CONFIRM_REAL_MONEY=I_KNOW_THIS_IS_REAL_MONEY 雙重確認
+- 策略：大盤 MA20 過濾（含 0.1% 遲滯帶）+ OpenAI 情緒分析（可關閉）+ VWAP 進場
+        + 滑點保護 + 移動止盈（ATR 動態回撤）+ 3% 強制止損 + 5 工作天時間停損
+- 支援：多標的同時監控（PINNED_STOCKS）+ 每日 09:20 漏斗掃描動態加股
+        + LONG_TERM_HOLD 長線持有清單（不納入停損監控）+ 部位上限 MAX_POSITIONS
+- 部署：GitHub Actions 自動執行 + Artifacts 跨 run 備份還原 logs/
 """
 
 import math
@@ -46,11 +49,11 @@ load_dotenv()
 
 INITIAL_CAPITAL   = 68000   # 原始投入資金（元），用於計算累計損益
 TOTAL_BUDGET      = 46000   # 總預算（元）
-MAX_POSITIONS     = 7       # 最多同時持有部位數
+MAX_POSITIONS     = 4       # 最多同時持有部位數（TOTAL_BUDGET 46,000 ÷ MIN_ORDER_VALUE 11,000 = 4，與 _calc_position_size 動態退化結果一致）
 POSITION_SIZE     = TOTAL_BUDGET // MAX_POSITIONS  # 初始值，MIN_ORDER_VALUE 定義後由 _calc_position_size() 修正
 
 
-STOP_LOSS_PCT        = 0.03   # 強制止損：虧損 3%（回測驗證：2% 橫盤假止損過多，3% 最大回撤控制較優，折衷取 2.5%）
+STOP_LOSS_PCT        = 0.03   # 強制止損：虧損 3%（回測驗證：2% 橫盤假止損過多，3% 最大回撤控制較優）
 TRAILING_START       = 0.015   # 移動止盈啟動點：獲利達 1.5%
 TRAILING_PULLBACK    = 0.015    # 移動止盈觸發（ATR 不足時的保底固定回撤）
 TRAILING_ATR_MULT    = 0.6     # 動態回撤：從最高點回落 0.6×ATR 時出場（ATR 夠大時優先）
@@ -58,6 +61,58 @@ BREAKEVEN_TRIGGER    = 0.02    # 成本保衛：獲利達 2% 時自動將止損�
 TIME_STOP_BDAYS      = 5       # 時間停損：持有超過 N 個工作天仍未觸發其他出場條件 → 強制出場，釋放資金
 SLIPPAGE_LIMIT       = 0.01    # 滑點保護：買賣價差 > 1%（零股市場天生價差較大，原 0.5% 過嚴）
 MIN_ORDER_VALUE      = 11_000   # 最小下單金額（元）：確保手續費占比 < 0.1%，避免最低手續費侵蝕獲利
+
+
+# 正式交易雙重確認字串。長度刻意設計到「不可能不小心打對」的程度，
+# 唯一通過方式：使用者從 .env.example 或 SOP 文件複製貼上完整字串。
+REAL_MONEY_CONFIRMATION = "I_KNOW_THIS_IS_REAL_MONEY"
+
+
+def _parse_simulation_env() -> bool:
+    """
+    從環境變數讀取交易模式設定，**含雙重確認防呆機制**。
+
+    模擬模式判定 (回傳 True)：
+      - SIMULATION 未設定，或值為：true / 1 / yes / sim / simulation
+      - 任何無法識別的值（亂碼、中文、空白等）
+
+    正式模式判定 (回傳 False)，必須**同時滿足**：
+      1. SIMULATION 設為：false / 0 / no / real / production / prod
+      2. CONFIRM_REAL_MONEY 設為：I_KNOW_THIS_IS_REAL_MONEY（精確匹配，區分大小寫）
+
+    ⚠️ 多層安全網：
+      - 未設定 SIMULATION → 模擬
+      - SIMULATION 值無法識別 → 模擬
+      - SIMULATION=false 但 CONFIRM_REAL_MONEY 沒設 → 模擬 + 大警告
+      - SIMULATION=false 但 CONFIRM_REAL_MONEY 值錯誤 → 模擬 + 大警告
+      - 兩者皆正確 → 正式（會印出醒目紅色警告）
+    """
+    val = os.environ.get("SIMULATION", "").strip().lower()
+    real_values = {"false", "0", "no", "real", "production", "prod"}
+
+    # 第一層：SIMULATION 沒明確要求正式 → 直接回模擬
+    if val not in real_values:
+        return True
+
+    # 第二層：要切換正式必須通過雙重確認
+    confirm = os.environ.get("CONFIRM_REAL_MONEY", "").strip()
+    if confirm != REAL_MONEY_CONFIRMATION:
+        print("")
+        print("⚠️ " * 30)
+        print("⚠️  [防呆機制觸發] SIMULATION=false，但雙重確認未通過！")
+        print(f"⚠️  目前 CONFIRM_REAL_MONEY = {confirm!r}")
+        print(f"⚠️  需設定為                = {REAL_MONEY_CONFIRMATION!r}")
+        print("⚠️  ")
+        print("⚠️  為保護你的資金安全，**自動 fallback 到模擬交易模式**。")
+        print("⚠️  若確實要切換正式交易，請：")
+        print("⚠️    1. 本機：在 .env 加入 CONFIRM_REAL_MONEY=I_KNOW_THIS_IS_REAL_MONEY")
+        print("⚠️    2. GitHub Actions：在 Secrets 新增 CONFIRM_REAL_MONEY = 上述字串")
+        print("⚠️ " * 30)
+        print("")
+        return True
+
+    # 兩道關卡都通過：確認進入正式交易
+    return False
 
 
 def _business_days_between(start_date, end_date) -> int:
@@ -83,11 +138,15 @@ def _calc_position_size(total_budget: float) -> int:
       effective > 0 → POSITION_SIZE = total_budget // effective_positions
       effective = 0 → 回傳原始值（< MIN_ORDER_VALUE，進場時會被擋下）
 
-    範例（MIN_ORDER_VALUE=9,000）：
-      30,000 / MAX_POS=3 → affordable=3, effective=3, size=10,000
-      20,000 / MAX_POS=3 → affordable=2, effective=2, size=10,000
-      12,000 / MAX_POS=3 → affordable=1, effective=1, size=12,000
-       8,000 / MAX_POS=3 → affordable=0, blocked
+    當前預設組合（TOTAL_BUDGET=46,000、MIN_ORDER_VALUE=11,000、MAX_POSITIONS=4）：
+      affordable=4, effective=4, POSITION_SIZE=11,500
+
+    動態退化範例（MIN_ORDER_VALUE=11,000）：
+      46,000 / MAX_POS=4 → affordable=4, effective=4, size=11,500
+      33,000 / MAX_POS=4 → affordable=3, effective=3, size=11,000
+      22,000 / MAX_POS=4 → affordable=2, effective=2, size=11,000
+      11,000 / MAX_POS=4 → affordable=1, effective=1, size=11,000
+      10,000 / MAX_POS=4 → affordable=0, blocked
     """
     affordable          = int(total_budget // MIN_ORDER_VALUE)
     effective_positions = min(affordable, MAX_POSITIONS)
@@ -128,87 +187,106 @@ FUNNEL_SCAN_MINUTE = 20
 FUNNEL_MAX_RESULTS = 5    # 漏斗最多取幾檔加入當日監控清單
 
 # 固定監控標的（不受漏斗掃描影響，每輪必掃）
-# 回測驗證後精選（2021–2026 yfinance 日K，PF ≥ 1.2、夏普 ≥ 1.0、淨損益為正）
+# 回測驗證後精選（2021–2026 yfinance 日K，門檻 PF ≥ 1.1、夏普 ≥ 0.6、淨損益為正）
 # ★★ = 0050 成分股（零股流動性最佳）；★ = 非 0050 但回測表現優異
-# 移除：2317(PF=0.93)、3037(PF=0.53)、2383(PF=0.43)、2368(PF=0.67)、3661/3443(無成交)、6805(資料不足)
+# 2026-05-26 再驗證：移除 7 檔嚴重虧損股至 CANDIDATE_STOCKS
+#   2303 聯電、6213 聯茂、4991 環宇-KY、6147 頎邦、2103 台橡、2337 旺宏、8046 南電
+# 2026-05-26 新增：3264 欣銓（Wayne 自選清單中唯一回測通過 PF=1.51 Sharpe=2.77）
 PINNED_STOCKS: tuple[str, ...] = (
     # ── 原有回測驗證清單 ────────────────────────────────────────
-    "2059",   # ★  川湖  PF=3.21 Sharpe=4.52
-    "8210",   # ★  上緯  PF=1.87 Sharpe=3.63
-    "3324",   # ★  雙鴻  PF=1.69 Sharpe=3.60
-    "2454",   # ★★ 聯發科 PF=1.53 Sharpe=2.73（0050成分）
-    "3017",   # ★  奇鋐  PF=1.50 Sharpe=2.32
-    "2330",   # ★★ 台積電 PF=1.33 Sharpe=1.93（0050成分）
-    "8996",   # ★  高力  PF=1.20 Sharpe=1.14
+    "2059",   # ★  川湖    [伺服器機構件]   PF=3.21 Sharpe=4.52
+    "8210",   # ★  上緯    [化材/風電]      PF=1.87 Sharpe=3.63
+    "3324",   # ★  雙鴻    [散熱]           PF=1.69 Sharpe=3.60
+    "2454",   # ★★ 聯發科  [IC 設計]        PF=1.53 Sharpe=2.73（0050成分）
+    "3017",   # ★  奇鋐    [散熱]           PF=1.50 Sharpe=2.32
+    "2330",   # ★★ 台積電  [晶圓代工]       PF=1.33 Sharpe=1.93（0050成分）
+    "8996",   # ★  高力    [散熱]           PF=1.20 Sharpe=1.14
     # ── 0050 成分股回測驗證通過（PF≥1.1、夏普≥0.6）────────────
-    "1590",   # ★★ 亞德客 PF=3.15 Sharpe=6.83（0050成分）
-    "2603",   # ★★ 長榮   PF=2.41 Sharpe=5.13（0050成分，航運）
-    "2609",   # ★★ 陽明   PF=1.58 Sharpe=2.55（0050成分，航運）
-    "2357",   # ★★ 華碩   PF=1.28 Sharpe=1.35（0050成分）
-    "2379",   # ★★ 瑞昱   PF=1.13 Sharpe=0.63（0050成分）
-    # ── 新增自選清單（圖片辨識，待回測驗證）───────────────────
-    "6664",   # 群翊
-    "6640",   # 均華
-    "7772",   # 耀穎
-    "2464",   # 盟立
-    "6141",   # 柏承
-    "6291",   # 沛亨
-    "3265",   # 台星科
-    "6257",   # 矽格
-    "3653",   # 健策
-    "5271",   # 紘通
-    "2485",   # 兆赫
-    "2313",   # 華通
-    "2449",   # 京元電子
-    "3701",   # 大眾控
-    "4903",   # 聯光通
-    "3450",   # 聯鈞
-    "2303",   # 聯電
-    "8033",   # 雷虎
-    "6205",   # 詮欣
-    "6669",   # 緯穎
-    "4958",   # 臻鼎-KY
-    "6213",   # 聯茂
-    "6673",   # 和詮
-    "6826",   # 和淞
-    "6488",   # 環球晶
-    "4991",   # 環宇-KY
-    "6147",   # 頎邦
-    "6442",   # 光聖
-    "2489",   # 瑞軒
-    "4755",   # 三福化
-    "6231",   # 系微
-    "2103",   # 台橡
-    "3406",   # 玉晶光
-    "8027",   # 鈦昇
-    "5498",   # 凱崴
-    "4979",   # 華星光
-    "6191",   # 精成科
-    "8021",   # 尖點
-    "3595",   # 山太士
-    "2337",   # 旺宏
-    "6434",   # 達輝光電
-    "2486",   # 一詮
-    "3585",   # 聯致
-    "3363",   # 上詮
-    "7769",   # 鴻勁
-    "7750",   # 新代
-    "3211",   # 順達
-    "3455",   # 由田
-    "3016",   # 嘉晶
-    "8046",   # 南電
-    "8358",   # 金居
-    "2426",   # 鼎元
-    "3163",   # 波若威
-    "6770",   # 力積電
-    "3661",   # 世芯-KY
-    "3443",   # 創意
-    "5347",   # 世界
-    "8042",   # 金山電
-    "3037",   # 欣興
-    "6166",   # 凌華
-    "2308",   # 台達電
-    "2408",   # 南亞科
+    "1590",   # ★★ 亞德客  [自動化（氣動）] PF=3.15 Sharpe=6.83（0050成分）
+    "2603",   # ★★ 長榮    [航運]           PF=2.41 Sharpe=5.13（0050成分）
+    "2609",   # ★★ 陽明    [航運]           PF=1.58 Sharpe=2.55（0050成分）
+    "2357",   # ★★ 華碩    [品牌電腦]       PF=1.28 Sharpe=1.35（0050成分）
+    "2379",   # ★★ 瑞昱    [IC 設計]        PF=1.13 Sharpe=0.63（0050成分）
+    # ── 新增自選清單（圖片辨識）─ 2026-05-26 已驗證，移除嚴重虧損 7 檔 ──
+    # 集中在 AI / 半導體題材：IC 設計、晶圓、封測、PCB、光通訊、散熱、伺服器
+    "6664",   # 群翊       [PCB 設備]
+    "6640",   # 均華       [半導體封測設備]
+    "7772",   # 耀穎       [散熱/精密加工]
+    "2464",   # 盟立       [自動化設備]
+    "6141",   # 柏承       [PCB]
+    "6291",   # 沛亨       [IC 設計（電源管理）]
+    "3265",   # 台星科     [半導體封測]
+    "6257",   # 矽格       [半導體封測]
+    "3653",   # 健策       [散熱]
+    "5271",   # 紘通       [半導體（材料/設備）]
+    "2485",   # 兆赫       [網通]
+    "2313",   # 華通       [PCB]
+    "2449",   # 京元電子   [半導體封測]
+    "3701",   # 大眾控     [電子]
+    "4903",   # 聯光通     [光通訊]
+    "3450",   # 聯鈞       [光通訊]
+    "8033",   # 雷虎       [無人機/國防]
+    "6205",   # 詮欣       [連接器]
+    "6669",   # 緯穎       [AI 伺服器]
+    "4958",   # 臻鼎-KY    [PCB（軟板）]
+    "6673",   # 和詮       [半導體封測]
+    "6826",   # 和淞       [工業電腦]
+    "6488",   # 環球晶     [半導體（矽晶圓）]
+    "6442",   # 光聖       [光通訊]
+    "2489",   # 瑞軒       [顯示器/品牌]
+    "4755",   # 三福化     [半導體化學材料]
+    "6231",   # 系微       [IC 設計（BIOS 韌體）]
+    "3406",   # 玉晶光     [光學鏡頭]
+    "8027",   # 鈦昇       [半導體設備]
+    "5498",   # 凱崴       [PCB]
+    "4979",   # 華星光     [光通訊]
+    "6191",   # 精成科     [PCB]
+    "8021",   # 尖點       [PCB（鑽針）]
+    "3595",   # 山太士     [半導體（封測設備）]
+    "6434",   # 達輝光電   [光電（LED）]
+    "2486",   # 一詮       [光電（LED 支架）]
+    "3585",   # 聯致       [PCB]
+    "3363",   # 上詮       [光通訊]
+    "7769",   # 鴻勁       [半導體測試設備]
+    "7750",   # 新代       [自動化（CNC 控制器）]
+    "3211",   # 順達       [鋰電池模組]
+    "3455",   # 由田       [AI 視覺檢測]
+    "3016",   # 嘉晶       [半導體（磊晶矽片）]
+    "8358",   # 金居       [PCB（銅箔）]
+    "2426",   # 鼎元       [光電/化合物半導體]
+    "3163",   # 波若威     [光通訊]
+    "6770",   # 力積電     [晶圓代工]
+    "3661",   # 世芯-KY    [IC 設計（ASIC）]
+    "3443",   # 創意       [IC 設計（ASIC）]
+    "5347",   # 世界       [晶圓代工]
+    "8042",   # 金山電     [電子零件]
+    "3037",   # 欣興       [PCB（ABF 載板）]
+    "6166",   # 凌華       [工業電腦]
+    "2308",   # 台達電     [電源管理/工業自動化]
+    "2408",   # 南亞科     [記憶體（DRAM）]
+    # ── Wayne 自選 ─ 2026-05-26 回測通過 ─────────────────────
+    "3264",   # 欣銓       [半導體封測測試]  PF=1.51 Sharpe=2.77
+)
+
+# 候選池 — 僅追蹤不交易：用 bot 策略回測賠錢或表現不穩，留作未來人工研究用。
+# **不會被 bot.py 主迴圈掃描下單**，避免明知賠錢還自動買進。
+# 之後可在 backtest.py 改參數重驗、或徹底刪除。
+CANDIDATE_STOCKS: tuple[str, ...] = (
+    # ── Wayne 自選新增但回測未通過（2026-05-26 驗證）─────────
+    "3481",   # 群創       [面板]                 PF=1.00 Sharpe= 0.00 (持平)
+    "3189",   # 景碩       [IC 載板]              PF=1.00 Sharpe=-0.01 (持平)
+    "8028",   # 鈺齊-KY    [鞋類製造]             PF=0.99 Sharpe=-0.03 (微賠)
+    "2327",   # 國巨       [被動元件]             PF=0.94 Sharpe=-0.42
+    "2344",   # 華邦電     [記憶體（DRAM/Flash）] PF=0.55 Sharpe=-4.33
+    "6271",   # 同欣電     [半導體封測]           PF=0.27 Sharpe=-10.39 (-75% 回撤)
+    # ── 自 PINNED_STOCKS 移出（嚴重虧損，2026-05-26 驗證）────
+    "2303",   # 聯電       [晶圓代工]             PF=0.74 Sharpe=-2.14
+    "6213",   # 聯茂       [銅箔基板 CCL]         PF=0.53 Sharpe=-3.91
+    "4991",   # 環宇-KY    [化合物半導體]         PF=0.24 Sharpe=-10.75
+    "6147",   # 頎邦       [半導體封測]           PF=0.58 Sharpe=-4.05
+    "2103",   # 台橡       [化材（橡膠）]         PF=0.61 Sharpe=-3.10
+    "2337",   # 旺宏       [記憶體（NOR Flash）]  PF=0.61 Sharpe=-2.72
+    "8046",   # 南電       [PCB（ABF 載板）]      PF=0.00 Sharpe=-74.22
 )
 
 # 長期持有清單：列在此處的股票不納入止損/止盈監控，由人工決定出場時機
@@ -445,7 +523,20 @@ class AITradingBot:
     def __init__(self):
         _debug_env()
 
-        self._simulation = False   # ← 切換正式交易時改為 False
+        # 交易模式由環境變數 SIMULATION 控制（True=模擬 / False=正式）
+        # 安全預設：未設定環境變數時為 True（模擬），避免任何意外動用真實資金
+        # 切換正式交易方式：
+        #   - 本機：編輯 .env，加入 SIMULATION=false
+        #   - GitHub Actions：在 Repository Secrets 設定 SIMULATION=false
+        self._simulation = _parse_simulation_env()
+
+        if self._simulation:
+            print("[初始化] 🟢 交易模式：模擬交易（simulation=True，不動用真實資金）")
+        else:
+            print("[初始化] " + "=" * 60)
+            print("[初始化] 🔴 交易模式：正式交易（simulation=False，動用真實資金！）")
+            print("[初始化] " + "=" * 60)
+
         self.api = sj.Shioaji(simulation=self._simulation)
         print("[初始化] Shioaji 實例建立完成")
 

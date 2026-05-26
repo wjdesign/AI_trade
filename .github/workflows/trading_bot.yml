@@ -119,6 +119,19 @@ jobs:
           echo "${{ secrets.CA_CERT_B64 }}" | base64 -d > /tmp/sinopac.pfx
           echo "CA_CERT_PATH=/tmp/sinopac.pfx" >> $GITHUB_ENV
 
+      - name: 還原歷史交易紀錄（如有）
+        # 從前次 workflow run 的 artifacts 下載 logs/，讓 bot 啟動時能讀到歷史紀錄。
+        # 第一次跑或者沒有 artifacts 時不會失敗（continue-on-error）。
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trade-logs-*
+          path: ./
+          merge-multiple: true
+          # 用 GITHUB_TOKEN 跨 workflow run 抓最近的 artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+        continue-on-error: true
+
       - name: 執行交易機器人
         env:
           API_KEY:              ${{ secrets.API_KEY }}
@@ -127,9 +140,31 @@ jobs:
           OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 交易模式控制（重要）
+          #   未設定 / 設為 true → 模擬交易（不動用真實資金，安全預設）
+          #   設為 false → 正式交易（動用真實資金）
+          # 切換正式交易：到 Repository Settings → Secrets → 新增 SIMULATION = false
+          SIMULATION:           ${{ secrets.SIMULATION || 'true' }}
+          # 正式交易雙重確認（防呆）
+          #   只有 SIMULATION=false 還不夠，必須同時設 CONFIRM_REAL_MONEY=I_KNOW_THIS_IS_REAL_MONEY
+          #   兩者皆正確時才會真的進入正式模式，任何一項缺漏都會 fallback 到模擬
+          CONFIRM_REAL_MONEY:   ${{ secrets.CONFIRM_REAL_MONEY || '' }}
           # HTTPS_PROXY: 選填，若需要 Proxy 才能連 Telegram，請在 Secrets 加入後取消此行註解
           # HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
         run: python bot.py
+
+      - name: 備份本次交易紀錄
+        # 不論 bot 正常結束或異常中斷，都把 logs/ 和 shioaji.log 備份成 artifact，
+        # 保留 90 天，下次 workflow run 啟動時會自動下載還原。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade-logs-${{ github.run_id }}
+          path: |
+            logs/
+            shioaji.log
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: 清除憑證
         if: always()
