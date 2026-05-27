@@ -623,8 +623,16 @@ class AITradingBot:
         self.api.activate_ca(ca_path=ca_path, ca_passwd=ca_pass)
         print("[初始化] CA 憑證啟用成功")
 
-        self.api.set_default_account(accounts[1])
-        print(f"[初始化] 預設帳戶：{accounts[1]}")
+        # 找證券帳戶當預設（bot 只交易股票/零股）。
+        # 原作者寫死 accounts[1] 假設「[0]=期貨、[1]=證券」，
+        # 但純證券戶只有 1 個帳戶會 IndexError。改用 type 過濾，
+        # 沒申請期貨帳戶也能正常運作。
+        stock_acc = next(
+            (a for a in accounts if a.account_type == sj.constant.AccountType.Stock),
+            accounts[0],
+        )
+        self.api.set_default_account(stock_acc)
+        print(f"[初始化] 預設帳戶：{stock_acc}")
         print(f"[初始化] 所有帳戶：{[str(a.account_id) for a in accounts]}")
 
         self.positions: dict[str, Position] = {}
