@@ -18,7 +18,12 @@ from collections import deque
 from dataclasses import dataclass, field
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
-sys.stdout.reconfigure(line_buffering=True)
+# Windows cp950 console 無法輸出 emoji (🟢/🔴 等)，強制 UTF-8 避免崩潰
+try:
+    sys.stdout.reconfigure(line_buffering=True, encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError, TypeError):
+    pass
 
 import shioaji as sj
 import pandas as pd
@@ -413,7 +418,12 @@ def send_notify(msg: str) -> None:
 
 
 def get_ai_sentiment(news_text: str) -> tuple[float, str]:
-    """OpenAI 語意分析：回傳 (情緒分數 -1.0~1.0, 繁中摘要)"""
+    """OpenAI 語意分析：回傳 (情緒分數 -1.0~1.0, 繁中摘要)
+    SENTIMENT_ENABLED=False 時 early return 1.0，避免「啟動分析」之類
+    無條件呼叫者打到 OpenAI 浪費費用或在 API key 為 dummy 時報 401。
+    """
+    if not SENTIMENT_ENABLED:
+        return 1.0, "情緒分析已停用 (SENTIMENT_ENABLED=False)"
     try:
         prompt = (
             "你是台股分析師。請根據以下新聞標題分析對整體台股的影響，"
@@ -625,10 +635,11 @@ class AITradingBot:
 
         # 找證券帳戶當預設（bot 只交易股票/零股）。
         # 原作者寫死 accounts[1] 假設「[0]=期貨、[1]=證券」，
-        # 但純證券戶只有 1 個帳戶會 IndexError。改用 type 過濾，
-        # 沒申請期貨帳戶也能正常運作。
+        # 但純證券戶只有 1 個帳戶會 IndexError。改用 type 名稱過濾，
+        # 沒申請期貨帳戶也能正常運作。Shioaji 1.3.2 沒有 sj.constant.AccountType，
+        # 所以用 type(a).__name__ 比對最穩。
         stock_acc = next(
-            (a for a in accounts if a.account_type == sj.constant.AccountType.Stock),
+            (a for a in accounts if type(a).__name__ == "StockAccount"),
             accounts[0],
         )
         self.api.set_default_account(stock_acc)
