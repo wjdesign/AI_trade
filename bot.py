@@ -479,19 +479,30 @@ def _debug_env() -> None:
     print(f"  {'CONFIRM_REAL_MONEY':<22}: {mask(confirm) if confirm else '(未設定 → 防呆生效)'}")
 
     # ── 策略參數（GitHub Variables；未設則 bot.py 內 fallback 預設值）──
-    strategy_vars = ["MAX_POSITIONS", "TOTAL_BUDGET", "STOP_LOSS_PCT", "MIN_ORDER_VALUE", "SENTIMENT_ENABLED"]
+    # 每個參數附「用途說明」，方便看 log 時無需翻文件就懂
+    strategy_vars = [
+        ("MAX_POSITIONS",     "最多同時持有部位數"),
+        ("TOTAL_BUDGET",      "總可用資金（元）"),
+        ("STOP_LOSS_PCT",     "強制止損% (與 1.5×ATR 取嚴格者)"),
+        ("MIN_ORDER_VALUE",   "最小下單金額（元，避免手續費侵蝕）"),
+        ("SENTIMENT_ENABLED", "AI 新聞情緒分析開關 (需 OpenAI API)"),
+    ]
     print("[Debug] ── 策略參數（GitHub Variables）─────────────")
-    for k in strategy_vars:
-        val = os.environ.get(k, "").strip()
-        print(f"  {k:<22}: {val or '(未設定 → 用 bot.py 預設)'}")
+    for k, desc in strategy_vars:
+        val = os.environ.get(k, "").strip() or "(未設定 → 用 bot.py 預設)"
+        print(f"  {k:<22}: {val:<32} # {desc}")
 
     # ── bot.py 實際生效值（重要：這才是 bot 真的用的值）──────
+    actual_values = [
+        ("MAX_POSITIONS",     str(MAX_POSITIONS),       "最多同時持有部位數"),
+        ("TOTAL_BUDGET",      f"{TOTAL_BUDGET:,}",      "總可用資金（元）"),
+        ("STOP_LOSS_PCT",     f"{STOP_LOSS_PCT}",       f"強制止損 ({STOP_LOSS_PCT:.1%})"),
+        ("MIN_ORDER_VALUE",   f"{MIN_ORDER_VALUE:,}",   "最小下單金額（元）"),
+        ("SENTIMENT_ENABLED", str(SENTIMENT_ENABLED),   "AI 新聞情緒分析開關"),
+    ]
     print("[Debug] ── 實際生效值 ──────────────────────────────")
-    print(f"  {'MAX_POSITIONS (實際)':<22}: {MAX_POSITIONS}")
-    print(f"  {'TOTAL_BUDGET (實際)':<22}: {TOTAL_BUDGET:,}")
-    print(f"  {'STOP_LOSS_PCT (實際)':<22}: {STOP_LOSS_PCT}")
-    print(f"  {'MIN_ORDER_VALUE (實際)':<22}: {MIN_ORDER_VALUE:,}")
-    print(f"  {'SENTIMENT_ENABLED (實際)':<22}: {SENTIMENT_ENABLED}")
+    for name, val, desc in actual_values:
+        print(f"  {name:<22}: {val:<32} # {desc}")
 
     # SECRET_KEY 額外診斷
     sk = os.environ.get("SECRET_KEY", "").strip()
