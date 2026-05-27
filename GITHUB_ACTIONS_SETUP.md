@@ -313,44 +313,215 @@ bot.py 啟動時會印出 `API_KEY` 的長度（不是內容）和 `SECRET_KEY` 
 
 ---
 
-## 切換正式交易檢查清單
+## 切換正式交易 SOP（完整版）
 
-當你確認模擬交易跑得穩定，要切換到正式交易時，**完全不需要改原始碼**，只需修改一個 Secret：
+> ⚠️ 正式交易 = 動用真實資金。每一步都要做完整，跳過任一步都會浪費你時間（最壞情況 bot 連不上永豐金）。
 
-### 切換步驟
+### 🛡 三道保險原理（先理解再做）
 
-- [ ] 確認模擬交易已穩定運行至少 2 週，無重大異常
-- [ ] 確認永豐金帳戶可用資金 ≥ `TOTAL_BUDGET`（46,000 元）
-- [ ] 第一天降低風險：本機 commit 一個版本把 `MAX_POSITIONS` 改為 1（只試一檔），push 上去
-- [ ] 進入 `https://github.com/wjdesign/AI_trade/settings/secrets/actions`
-- [ ] **新增 Secret 1：名稱 `SIMULATION`，值 `false`**（沒有引號）
-- [ ] **新增 Secret 2：名稱 `CONFIRM_REAL_MONEY`，值 `I_KNOW_THIS_IS_REAL_MONEY`**（精確匹配，區分大小寫）
-- [ ] **手動觸發一次 workflow 驗證沒問題**，不要等隔天才發現失敗
-- [ ] 在 workflow log 開頭確認看到：
-      ```
-      [初始化] ============================================================
-      [初始化] 🔴 交易模式：正式交易（simulation=False，動用真實資金！）
-      [初始化] ============================================================
-      ```
-- [ ] 如果你看到的是「⚠️ [防呆機制觸發] ... fallback 到模擬交易」，代表 `CONFIRM_REAL_MONEY` 設錯或沒設，**請去 Secrets 確認字串完全正確**
-- [ ] 在 Telegram 上盯著第一次的買進通知和成交回報
-- [ ] 第一週密切觀察成交紀錄、Telegram 通知、losses 是否在預期範圍
+bot 要動真錢必須**同時**通過 3 道檢查，任一失敗都會 fallback 模擬：
 
-### 緊急切回模擬模式
+| 道 | 機制 | 在哪設定 |
+|----|------|---------|
+| 1 | `SIMULATION` env var = `false` | GitHub Secret |
+| 2 | `CONFIRM_REAL_MONEY` env var = `I_KNOW_THIS_IS_REAL_MONEY` | GitHub Secret |
+| 3 | API Key 在永豐金後台勾「**正式環境**」權限 | 永豐金 API 管理頁 |
 
-如果發現策略行為有問題、想立刻停止真實下單：
+**所以切正式要做 3 個地方的設定**，不是只設 GitHub Secrets。
 
-**最快做法（10 秒）** — 利用防呆機制：
-1. 進入 Secrets 頁面，**刪除 `CONFIRM_REAL_MONEY` 這個 Secret**
-2. 進入 Actions 頁面，取消正在執行中的 workflow run
-3. 下次 workflow 啟動時防呆機制會觸發 → 自動 fallback 到模擬模式
+---
 
-> 這個做法的好處：你**不需要記得回去把 `SIMULATION` 改回 true**。只要 `CONFIRM_REAL_MONEY` 缺一個，就絕對不會進入正式模式。
+### 階段 1：上線前 1-2 週準備期
 
-**完全停用做法（5 秒）**：
-1. 進入 Actions 頁面 → 選擇 workflow → 右上角「**...**」→ **「Disable workflow」**
+- [ ] 雲端模擬已穩定 cron 自動跑 **連續 2 週無重大異常**
+- [ ] 每天看 Telegram 推播，**理解 bot 行為**（什麼條件會買/賣、虧損頻率）
+- [ ] 用 [batch_backtest.py](batch_backtest.py) 重跑 5 年回測，對照「實際模擬」vs「歷史回測」損益走勢
+- [ ] 評估自己是否能接受**單日最大虧損** ~5% TOTAL_BUDGET ≈ 2,300 元（極端情境）
+- [ ] 確認永豐金帳戶可用資金 **≥ TOTAL_BUDGET + 緩衝**（建議 ≥ 50,000 元）
 
-兩者選一，**都不需要 commit / push 任何程式碼變更**。
+### 階段 2：永豐金後台勾「正式環境」權限
+
+**這步驟最常被遺忘，沒做的話 GitHub Secret 設了也沒用**（永豐金後台會擋）。
+
+- [ ] 登入永豐金證券網頁 → API 管理
+- [ ] 找到現有的 API Key（例如 `AI_trade_v2`） → **點編輯**
+- [ ] **新增勾選「正式環境」** checkbox
+- [ ] 確認「行情/資料」「帳務」「交易」3 個權限**仍勾**
+- [ ] 儲存
+
+**注意**：
+- **不需要重新申請 Key**（同一把可以同時連模擬 + 正式）
+- **不需要重新下載 CA 憑證**（同一份繼續用）
+- **不需要更新 GitHub Secret 的 API_KEY / SECRET_KEY**
+
+### 階段 3：第一週風險縮減（程式碼變更）
+
+- [ ] 編輯 [bot.py:49](bot.py#L49) 把 `MAX_POSITIONS` 改為 **1**（只試一檔）
+- [ ] commit + push 到 main
+- [ ] 確認 workflow 抓到新版（看下次 cron run 的 commit hash）
+
+**理由**：第一週只用 1 檔測試，最壞虧損 11,500 × 3% ≈ NT$ 345（單筆）。
+
+### 階段 4：設定 GitHub Secrets（2 個）
+
+到 `https://github.com/wjdesign/AI_trade/settings/secrets/actions` → New repository secret：
+
+- [ ] **Secret 1**：
+  - Name: `SIMULATION`
+  - Value: `false`（**純小寫，沒有引號**）
+- [ ] **Secret 2**：
+  - Name: `CONFIRM_REAL_MONEY`
+  - Value: `I_KNOW_THIS_IS_REAL_MONEY`（**精確匹配，全大寫，有底線**）
+
+複製貼上時注意：**前後不能有空白、不能有換行**。
+
+### 階段 5：手動觸發驗證（不要等隔天 cron）
+
+- [ ] Actions → AI Trade Bot → **Run workflow** → main → Run
+- [ ] 看 log 開頭應該看到：
+  ```
+  [初始化] ============================================================
+  [初始化] 🔴 交易模式：正式交易（simulation=False，動用真實資金！）
+  [初始化] ============================================================
+  ```
+- [ ] **如果看到「⚠️ [防呆機制觸發] ... fallback 到模擬交易」** → 3 道保險其中一道沒過：
+  - 檢查 1：`SIMULATION` Secret 值是 `false`（不是 `False` 不是 `0`）
+  - 檢查 2：`CONFIRM_REAL_MONEY` 值精確 = `I_KNOW_THIS_IS_REAL_MONEY`
+  - 檢查 3：永豐金後台 API Key 已勾「正式環境」
+- [ ] **如果看到 `Unauthorized` / `403 Forbidden`** → 階段 2 沒做（永豐金後台沒勾正式環境）
+- [ ] Telegram 收到的啟動通知應該寫 `simulation=False（正式交易⚠️）`
+- [ ] 確認後 **cancel workflow**，等明早 cron 自動跑
+
+### 階段 6：上線後 1 週密切觀察
+
+- [ ] 每天看 Telegram 推播（買進 / 賣出 / 日終總結）
+- [ ] 每天看 `logs/trades_YYYYMMDD.csv` 確認跟 Telegram 一致
+- [ ] 每週對帳一次：永豐金 App 看實際成交 vs CSV 紀錄
+- [ ] 一週後一切正常 → 把 `MAX_POSITIONS` 恢復 4 + commit + push
+
+---
+
+## 緊急停止 SOP（按情境分 5 級）
+
+按「危險程度」+「執行速度」分級。發生狀況時**從上往下選**，找到最符合的層級。
+
+### 🟢 LEVEL 1：暫停下一輪 cron（最常用、最安全）
+
+**情境**：今天 cron 跑得不順 / 你想休息一陣子 / 還沒打算動真錢但想停雲端
+
+**做法**（30 秒）：
+1. https://github.com/wjdesign/AI_trade/actions → AI Trade Bot
+2. 右上「**...**」→ **Disable workflow**
+
+**結果**：
+- ✅ 下次 cron **不會觸發**
+- ✅ 當前正在跑的 workflow run **不受影響**（會繼續跑完）
+- ✅ 沒有任何持倉變化
+
+**復原**：同位置「Enable workflow」即可。
+
+---
+
+### 🟡 LEVEL 2：fallback 回模擬模式（不停 cron，但不下真實單）
+
+**情境**：策略有問題，但你想繼續觀察 bot 行為（用虛擬資金）
+
+**做法**（30 秒）：
+1. https://github.com/wjdesign/AI_trade/settings/secrets/actions
+2. 找 `CONFIRM_REAL_MONEY` → 點 🗑 垃圾桶圖示刪除
+3. 下次 cron 啟動 → bot 偵測到防呆未通過 → **自動 fallback 模擬**
+
+**結果**：
+- ✅ workflow 繼續跑（cron 照常觸發）
+- ✅ 但**不再下真實單**（虛擬資金交易）
+- ⚠ **當前正在跑的 workflow run 不受影響**（要 cancel 它，或等收盤）
+- ⚠ **已持有的真實持倉 bot 還是會繼續監控 + 真實平倉**（要手動賣才會脫手，見 LEVEL 4）
+
+**為什麼推薦這個而不是把 `SIMULATION` 改回 true**？
+1. 刪 Secret 比改值快
+2. 即使你之後忘記復原，也是「**安全的忘記**」（fallback 模擬）
+
+**復原**：重新加 `CONFIRM_REAL_MONEY` Secret。
+
+---
+
+### 🟠 LEVEL 3：立刻停止當前 workflow（bot 正在交易中）
+
+**情境**：bot 現在正在跑、剛下了一筆你不想要的單
+
+**做法**（1 分鐘）：
+1. Actions 頁面 → 找正在跑的 workflow run（黃色圓點 = 跑中）
+2. 點進去 → 右上 **Cancel workflow**
+3. bot 收到 SIGTERM → 走 graceful logout（不再下新單）
+
+**結果**：
+- ✅ bot 立刻停止下單
+- ⚠ **已委託但未成交的單** → 留在永豐金後台繼續等成交（**要去永豐金 App 手動撤單**）
+- ⚠ **已成交的持倉** → 留在帳戶（要 LEVEL 4 處理）
+
+**配合做法**：
+- 同時做 LEVEL 1（disable workflow，避免明早又自動跑）
+- 同時做 LEVEL 2（刪 CONFIRM_REAL_MONEY，雙重保險）
+
+---
+
+### 🔴 LEVEL 4：持倉緊急平倉（已持有股票想立刻賣）
+
+**情境**：bot 買進的股票你不想等停損/停利觸發，想**現在賣掉**
+
+**重要**：bot **不會立刻幫你賣** — 它等程式內的 4 個出場條件觸發（ATR 止損、成本保衛、移動止盈、時間停損）。要立刻脫手必須**人工操作**。
+
+**做法**：
+1. 開永豐金 App / 大戶豐 App / 永豐金證券網頁
+2. 進入「證券下單」→ 選「賣出」
+3. 輸入持有的股票代號 + 持有股數
+4. 價格選**現價**或**市價**（市價 = 立刻以對手價成交）
+5. 送出 → 等成交回報
+
+**bot 後續行為**：
+- bot 下輪掃描（60 秒內）發現「持倉不見了」
+- 自動清除內部 `self.positions` 紀錄
+- Telegram 會推「持倉同步：xxxx 已不存在，從追蹤清單移除」
+
+**注意**：
+- 賣出價可能跟 bot 預期不同（市價賣容易吃虧），但**至少能立刻變現**
+- 賣出後**T+2 才入帳**（台股交割週期）
+
+---
+
+### 🔴🔴 LEVEL 5：徹底切斷 bot（最 nuclear option）
+
+**情境**：bot 完全失控 / 程式有重大 bug / 不知道哪裡出問題
+
+**做法**（5 分鐘）：
+1. **LEVEL 1**：立刻 Disable workflow
+2. **LEVEL 3**：Cancel 當前 workflow run
+3. **永豐金後台撤銷 API Key**：
+   - 永豐金 → API 管理 → 找 Key → **刪除**
+   - 之後 bot 即使被 trigger 也**連不上**（API_KEY 已失效）
+4. **LEVEL 4**：手動賣出持倉
+
+**復原成本**：
+- 要重新申請 API Key（5 分鐘）
+- 要重新下載 CA 憑證（5 分鐘）
+- 要更新 6 個 GitHub Secret + 本機 .env（10 分鐘）
+- **總共 ~20 分鐘** 才能再啟動
+
+但這 20 分鐘成本就是**你可以隨時把 bot 砍掉**的安全保證。
+
+---
+
+## 🚨 緊急情境快速對照表
+
+| 你的狀況 | 用哪個 LEVEL |
+|---------|------------|
+| 想暫停雲端跑 | 🟢 LEVEL 1 |
+| 想繼續看 bot 行為但別下真錢 | 🟡 LEVEL 2 |
+| 想立刻阻止下一筆下單 | 🟠 LEVEL 3 |
+| 想立刻把現有持倉變現 | 🔴 LEVEL 4 |
+| bot 行為失控 / 程式可能有 bug | 🔴🔴 LEVEL 5 |
+
+**Pro tip**：實際緊急情境下，**LEVEL 1 + LEVEL 2 + LEVEL 4 一起做**最保險（停 cron + 防呆 + 手動清倉）。LEVEL 5 留給「真的有重大 bug」時用。
 
 ---
 
