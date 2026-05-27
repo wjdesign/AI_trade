@@ -16,6 +16,9 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 # Windows cp950 console 無法輸出 emoji (🟢/🔴 等)，強制 UTF-8 避免崩潰
@@ -222,119 +225,51 @@ FUNNEL_SCAN_HOUR   = 9    # 09:20 觸發
 FUNNEL_SCAN_MINUTE = 20
 FUNNEL_MAX_RESULTS = 5    # 漏斗最多取幾檔加入當日監控清單
 
-# 固定監控標的（不受漏斗掃描影響，每輪必掃）
-# 回測驗證後精選（2021–2026 yfinance 日K，門檻 PF ≥ 1.1、夏普 ≥ 0.6、淨損益為正）
-# ★★ = 0050 成分股（零股流動性最佳）；★ = 非 0050 但回測表現優異
-# 2026-05-26 再驗證：移除 7 檔嚴重虧損股至 CANDIDATE_STOCKS
-#   2303 聯電、6213 聯茂、4991 環宇-KY、6147 頎邦、2103 台橡、2337 旺宏、8046 南電
-# 2026-05-26 新增：3264 欣銓（Wayne 自選清單中唯一回測通過 PF=1.51 Sharpe=2.77）
-PINNED_STOCKS: tuple[str, ...] = (
-    # ── 原有回測驗證清單 ────────────────────────────────────────
-    "2059",   # ★  川湖    [伺服器機構件]   PF=3.21 Sharpe=4.52
-    "8210",   # ★  上緯    [化材/風電]      PF=1.87 Sharpe=3.63
-    "3324",   # ★  雙鴻    [散熱]           PF=1.69 Sharpe=3.60
-    "2454",   # ★★ 聯發科  [IC 設計]        PF=1.53 Sharpe=2.73（0050成分）
-    "3017",   # ★  奇鋐    [散熱]           PF=1.50 Sharpe=2.32
-    "2330",   # ★★ 台積電  [晶圓代工]       PF=1.33 Sharpe=1.93（0050成分）
-    "8996",   # ★  高力    [散熱]           PF=1.20 Sharpe=1.14
-    # ── 0050 成分股回測驗證通過（PF≥1.1、夏普≥0.6）────────────
-    "1590",   # ★★ 亞德客  [自動化（氣動）] PF=3.15 Sharpe=6.83（0050成分）
-    "2603",   # ★★ 長榮    [航運]           PF=2.41 Sharpe=5.13（0050成分）
-    "2609",   # ★★ 陽明    [航運]           PF=1.58 Sharpe=2.55（0050成分）
-    "2357",   # ★★ 華碩    [品牌電腦]       PF=1.28 Sharpe=1.35（0050成分）
-    "2379",   # ★★ 瑞昱    [IC 設計]        PF=1.13 Sharpe=0.63（0050成分）
-    # ── 新增自選清單（圖片辨識）─ 2026-05-26 已驗證，移除嚴重虧損 7 檔 ──
-    # 集中在 AI / 半導體題材：IC 設計、晶圓、封測、PCB、光通訊、散熱、伺服器
-    "6664",   # 群翊       [PCB 設備]
-    "6640",   # 均華       [半導體封測設備]
-    "7772",   # 耀穎       [散熱/精密加工]
-    "2464",   # 盟立       [自動化設備]
-    "6141",   # 柏承       [PCB]
-    "6291",   # 沛亨       [IC 設計（電源管理）]
-    "3265",   # 台星科     [半導體封測]
-    "6257",   # 矽格       [半導體封測]
-    "3653",   # 健策       [散熱]
-    "5271",   # 紘通       [半導體（材料/設備）]
-    "2485",   # 兆赫       [網通]
-    "2313",   # 華通       [PCB]
-    "2449",   # 京元電子   [半導體封測]
-    "3701",   # 大眾控     [電子]
-    "4903",   # 聯光通     [光通訊]
-    "3450",   # 聯鈞       [光通訊]
-    "8033",   # 雷虎       [無人機/國防]
-    "6205",   # 詮欣       [連接器]
-    "6669",   # 緯穎       [AI 伺服器]
-    "4958",   # 臻鼎-KY    [PCB（軟板）]
-    "6673",   # 和詮       [半導體封測]
-    "6826",   # 和淞       [工業電腦]
-    "6488",   # 環球晶     [半導體（矽晶圓）]
-    "6442",   # 光聖       [光通訊]
-    "2489",   # 瑞軒       [顯示器/品牌]
-    "4755",   # 三福化     [半導體化學材料]
-    "6231",   # 系微       [IC 設計（BIOS 韌體）]
-    "3406",   # 玉晶光     [光學鏡頭]
-    "8027",   # 鈦昇       [半導體設備]
-    "5498",   # 凱崴       [PCB]
-    "4979",   # 華星光     [光通訊]
-    "6191",   # 精成科     [PCB]
-    "8021",   # 尖點       [PCB（鑽針）]
-    "3595",   # 山太士     [半導體（封測設備）]
-    "6434",   # 達輝光電   [光電（LED）]
-    "2486",   # 一詮       [光電（LED 支架）]
-    "3585",   # 聯致       [PCB]
-    "3363",   # 上詮       [光通訊]
-    "7769",   # 鴻勁       [半導體測試設備]
-    "7750",   # 新代       [自動化（CNC 控制器）]
-    "3211",   # 順達       [鋰電池模組]
-    "3455",   # 由田       [AI 視覺檢測]
-    "3016",   # 嘉晶       [半導體（磊晶矽片）]
-    "8358",   # 金居       [PCB（銅箔）]
-    "2426",   # 鼎元       [光電/化合物半導體]
-    "3163",   # 波若威     [光通訊]
-    "6770",   # 力積電     [晶圓代工]
-    "3661",   # 世芯-KY    [IC 設計（ASIC）]
-    "3443",   # 創意       [IC 設計（ASIC）]
-    "5347",   # 世界       [晶圓代工]
-    "8042",   # 金山電     [電子零件]
-    "3037",   # 欣興       [PCB（ABF 載板）]
-    "6166",   # 凌華       [工業電腦]
-    "2308",   # 台達電     [電源管理/工業自動化]
-    "2408",   # 南亞科     [記憶體（DRAM）]
-    # ── Wayne 自選 ─ 2026-05-26 回測通過 ─────────────────────
-    "3264",   # 欣銓       [半導體封測測試]  PF=1.51 Sharpe=2.77
-)
+# ─────────────────────────────────────────────────────────────
+# 監控標的：從 config/watchlist.yaml 載入
+#   pinned         → PINNED_STOCKS（每輪必掃，符合條件自動下單）
+#   candidates     → CANDIDATE_STOCKS（僅追蹤不交易；主迴圈不引用）
+#   long_term_hold → LONG_TERM_HOLD（不納入停損/停利監控）
+# 改清單方式：編輯 config/watchlist.yaml + commit + push（不用動 bot.py）
+# 完整 schema 說明見該 yaml 檔頂部註解
+# ─────────────────────────────────────────────────────────────
+def _load_watchlist() -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
+    """從 config/watchlist.yaml 載入監控清單。
+    回傳 (pinned, candidates, long_term_hold)。
+    yaml 不存在或 schema 錯誤 → 立刻 raise，不要靜默回空（會讓 bot 沒監控標的）。
+    """
+    yaml_path = Path(__file__).parent / "config" / "watchlist.yaml"
+    if not yaml_path.exists():
+        raise FileNotFoundError(
+            f"監控清單檔案不存在：{yaml_path}\n"
+            f"請從 git repo checkout 完整檔案，或建立 config/watchlist.yaml"
+        )
+    with yaml_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
 
-# 候選池 — 僅追蹤不交易：用 bot 策略回測賠錢或表現不穩，留作未來人工研究用。
-# **不會被 bot.py 主迴圈掃描下單**，避免明知賠錢還自動買進。
-# 之後可在 backtest.py 改參數重驗、或徹底刪除。
-CANDIDATE_STOCKS: tuple[str, ...] = (
-    # ── Wayne 自選新增但回測未通過（2026-05-26 驗證）─────────
-    "3481",   # 群創       [面板]                 PF=1.00 Sharpe= 0.00 (持平)
-    "3189",   # 景碩       [IC 載板]              PF=1.00 Sharpe=-0.01 (持平)
-    "8028",   # 鈺齊-KY    [鞋類製造]             PF=0.99 Sharpe=-0.03 (微賠)
-    "2327",   # 國巨       [被動元件]             PF=0.94 Sharpe=-0.42
-    "2344",   # 華邦電     [記憶體（DRAM/Flash）] PF=0.55 Sharpe=-4.33
-    "6271",   # 同欣電     [半導體封測]           PF=0.27 Sharpe=-10.39 (-75% 回撤)
-    # ── 自 PINNED_STOCKS 移出（嚴重虧損，2026-05-26 驗證）────
-    "2303",   # 聯電       [晶圓代工]             PF=0.74 Sharpe=-2.14
-    "6213",   # 聯茂       [銅箔基板 CCL]         PF=0.53 Sharpe=-3.91
-    "4991",   # 環宇-KY    [化合物半導體]         PF=0.24 Sharpe=-10.75
-    "6147",   # 頎邦       [半導體封測]           PF=0.58 Sharpe=-4.05
-    "2103",   # 台橡       [化材（橡膠）]         PF=0.61 Sharpe=-3.10
-    "2337",   # 旺宏       [記憶體（NOR Flash）]  PF=0.61 Sharpe=-2.72
-    "8046",   # 南電       [PCB（ABF 載板）]      PF=0.00 Sharpe=-74.22
-)
+    def _extract_codes(section: str) -> list[str]:
+        items = data.get(section, []) or []
+        codes = []
+        for item in items:
+            if isinstance(item, dict) and "code" in item:
+                codes.append(str(item["code"]))
+            elif isinstance(item, str):
+                codes.append(item)
+            else:
+                print(f"[警告] watchlist.yaml {section} 內項目格式無法解析：{item!r}")
+        return codes
 
-# 長期持有清單：列在此處的股票不納入止損/止盈監控，由人工決定出場時機
-# 適合基本面持股、核心持倉等不希望被短期波動觸發自動賣出的標的
-LONG_TERM_HOLD: frozenset[str] = frozenset([
-    "0050",   # ★★ 元大台灣50（長期核心持倉，包含台積電等優質藍籌）
-    # "8021",    # 尖點
-    # "7750",    # 新代
-    # 範例：
-    # "2330",   # 台積電（長期核心持倉）
-    # "0050",   # 元大台灣50
-])
+    pinned         = tuple(_extract_codes("pinned"))
+    candidates     = tuple(_extract_codes("candidates"))
+    long_term_hold = frozenset(_extract_codes("long_term_hold"))
+    print(
+        f"[配置] watchlist.yaml 載入完成："
+        f"pinned={len(pinned)}、candidates={len(candidates)}、long_term_hold={len(long_term_hold)}"
+    )
+    return pinned, candidates, long_term_hold
+
+
+PINNED_STOCKS, CANDIDATE_STOCKS, LONG_TERM_HOLD = _load_watchlist()
 
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 tg_token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")

@@ -1,0 +1,126 @@
+# 監控標的設定 — bot.py 啟動時透過 _load_watchlist() 讀取
+#
+# 改清單後雲端需 commit + push，下次 cron 才會用新版。
+# 本機跑 bot.py 立刻生效。
+#
+# 三類清單：
+#   pinned           — 主要監控標的，每 60 秒掃描，符合進場條件會自動下單
+#   candidates       — 候選池，僅追蹤不交易（bot.py 主迴圈完全不引用）
+#   long_term_hold   — 長線持有，不納入停損/停利監控
+#
+# 每筆 item 必須有 code 欄位；其他欄位（name/industry/pf/sharpe/note）是可選的
+# metadata，給 Telegram 通知 + 未來工具使用，bot.py 只看 code。
+
+# ─────────────────────────────────────────────────────────────
+# pinned：固定監控標的（不受漏斗掃描影響，每輪必掃）
+# 回測驗證門檻 PF ≥ 1.1、夏普 ≥ 0.6、淨損益為正
+# ★★ = 0050 成分股（零股流動性最佳）；★ = 非 0050 但回測表現優異
+# 2026-05-26 再驗證：移除 7 檔嚴重虧損股至 candidates
+# 2026-05-26 新增：3264 欣銓（Wayne 自選清單中唯一回測通過）
+# ─────────────────────────────────────────────────────────────
+pinned:
+  # ── 原 12 檔回測驗證股（2021-2026 yfinance 日K）─────────────
+  - { code: "2059", name: "川湖",     industry: "伺服器機構件",  pf: 3.21, sharpe: 4.52, tag: "★" }
+  - { code: "8210", name: "勤誠",     industry: "PCB",            pf: 1.87, sharpe: 3.63, tag: "★" }
+  - { code: "3324", name: "雙鴻",     industry: "散熱",           pf: 1.69, sharpe: 3.60, tag: "★" }
+  - { code: "2454", name: "聯發科",   industry: "IC 設計",        pf: 1.53, sharpe: 2.73, tag: "★★" }
+  - { code: "3017", name: "奇鋐",     industry: "散熱",           pf: 1.50, sharpe: 2.32, tag: "★" }
+  - { code: "2330", name: "台積電",   industry: "晶圓代工",       pf: 1.33, sharpe: 1.93, tag: "★★" }
+  - { code: "8996", name: "高力",     industry: "散熱",           pf: 1.20, sharpe: 1.14, tag: "★" }
+  - { code: "1590", name: "亞德客-KY", industry: "自動化（氣動）", pf: 3.15, sharpe: 6.83, tag: "★★" }
+  - { code: "2603", name: "長榮",     industry: "航運",           pf: 2.41, sharpe: 5.13, tag: "★★" }
+  - { code: "2609", name: "陽明",     industry: "航運",           pf: 1.58, sharpe: 2.55, tag: "★★" }
+  - { code: "2357", name: "華碩",     industry: "品牌電腦",       pf: 1.28, sharpe: 1.35, tag: "★★" }
+  - { code: "2379", name: "瑞昱",     industry: "IC 設計",        pf: 1.13, sharpe: 0.63, tag: "★★" }
+
+  # ── 56 檔自選清單（圖片辨識來源，2026-05-26 已批次驗證）─────
+  # 集中在 AI / 半導體題材：IC 設計、晶圓、封測、PCB、光通訊、散熱、伺服器
+  - { code: "6664", name: "群翊",     industry: "PCB 設備" }
+  - { code: "6640", name: "均華",     industry: "半導體封測設備" }
+  - { code: "7772", name: "耀穎",     industry: "散熱/精密加工" }
+  - { code: "2464", name: "盟立",     industry: "自動化設備" }
+  - { code: "6141", name: "柏承",     industry: "PCB" }
+  - { code: "6291", name: "沛亨",     industry: "IC 設計（電源管理）" }
+  - { code: "3265", name: "台星科",   industry: "半導體封測" }
+  - { code: "6257", name: "矽格",     industry: "半導體封測" }
+  - { code: "3653", name: "健策",     industry: "散熱" }
+  - { code: "5271", name: "紘通",     industry: "半導體（材料/設備）" }
+  - { code: "2485", name: "兆赫",     industry: "網通" }
+  - { code: "2313", name: "華通",     industry: "PCB" }
+  - { code: "2449", name: "京元電子", industry: "半導體封測" }
+  - { code: "3701", name: "大眾控",   industry: "電子" }
+  - { code: "4903", name: "聯光通",   industry: "光通訊" }
+  - { code: "3450", name: "聯鈞",     industry: "光通訊" }
+  - { code: "8033", name: "雷虎",     industry: "無人機/國防" }
+  - { code: "6205", name: "詮欣",     industry: "連接器" }
+  - { code: "6669", name: "緯穎",     industry: "AI 伺服器" }
+  - { code: "4958", name: "臻鼎-KY",  industry: "PCB（軟板）" }
+  - { code: "6673", name: "和詮",     industry: "半導體封測" }
+  - { code: "6826", name: "和淞",     industry: "工業電腦" }
+  - { code: "6488", name: "環球晶",   industry: "半導體（矽晶圓）" }
+  - { code: "6442", name: "光聖",     industry: "光通訊" }
+  - { code: "2489", name: "瑞軒",     industry: "顯示器/品牌" }
+  - { code: "4755", name: "三福化",   industry: "半導體化學材料" }
+  - { code: "6231", name: "系微",     industry: "IC 設計（BIOS 韌體）" }
+  - { code: "3406", name: "玉晶光",   industry: "光學鏡頭" }
+  - { code: "8027", name: "鈦昇",     industry: "半導體設備" }
+  - { code: "5498", name: "凱崴",     industry: "PCB" }
+  - { code: "4979", name: "華星光",   industry: "光通訊" }
+  - { code: "6191", name: "精成科",   industry: "PCB" }
+  - { code: "8021", name: "尖點",     industry: "PCB（鑽針）" }
+  - { code: "3595", name: "山太士",   industry: "半導體（封測設備）" }
+  - { code: "6434", name: "達輝光電", industry: "光電（LED）" }
+  - { code: "2486", name: "一詮",     industry: "光電（LED 支架）" }
+  - { code: "3585", name: "聯致",     industry: "PCB" }
+  - { code: "3363", name: "上詮",     industry: "光通訊" }
+  - { code: "7769", name: "鴻勁",     industry: "半導體測試設備" }
+  - { code: "7750", name: "新代",     industry: "自動化（CNC 控制器）" }
+  - { code: "3211", name: "順達",     industry: "鋰電池模組" }
+  - { code: "3455", name: "由田",     industry: "AI 視覺檢測" }
+  - { code: "3016", name: "嘉晶",     industry: "半導體（磊晶矽片）" }
+  - { code: "8358", name: "金居",     industry: "PCB（銅箔）" }
+  - { code: "2426", name: "鼎元",     industry: "光電/化合物半導體" }
+  - { code: "3163", name: "波若威",   industry: "光通訊" }
+  - { code: "6770", name: "力積電",   industry: "晶圓代工" }
+  - { code: "3661", name: "世芯-KY",  industry: "IC 設計（ASIC）" }
+  - { code: "3443", name: "創意",     industry: "IC 設計（ASIC）" }
+  - { code: "5347", name: "世界",     industry: "晶圓代工" }
+  - { code: "8042", name: "金山電",   industry: "電子零件" }
+  - { code: "3037", name: "欣興",     industry: "PCB（ABF 載板）" }
+  - { code: "6166", name: "凌華",     industry: "工業電腦" }
+  - { code: "2308", name: "台達電",   industry: "電源管理/工業自動化" }
+  - { code: "2408", name: "南亞科",   industry: "記憶體（DRAM）" }
+
+  # ── Wayne 自選新增（2026-05-26 回測通過）────────────────────
+  - { code: "3264", name: "欣銓",     industry: "半導體封測測試", pf: 1.51, sharpe: 2.77 }
+
+# ─────────────────────────────────────────────────────────────
+# candidates：候選池 — 僅追蹤不交易
+# 用 bot 策略回測賠錢或表現不穩，留作未來人工研究用
+# bot.py 主迴圈完全不引用 → 不會被掃描下單
+# ─────────────────────────────────────────────────────────────
+candidates:
+  # ── Wayne 自選新增但回測未通過（2026-05-26 驗證）─────────
+  - { code: "3481", name: "群創",     industry: "面板",                pf: 1.00, sharpe: 0.00,   note: "持平" }
+  - { code: "3189", name: "景碩",     industry: "IC 載板",             pf: 1.00, sharpe: -0.01,  note: "持平" }
+  - { code: "8028", name: "鈺齊-KY",  industry: "鞋類製造",            pf: 0.99, sharpe: -0.03,  note: "微賠" }
+  - { code: "2327", name: "國巨",     industry: "被動元件",            pf: 0.94, sharpe: -0.42 }
+  - { code: "2344", name: "華邦電",   industry: "記憶體（DRAM/Flash）", pf: 0.55, sharpe: -4.33 }
+  - { code: "6271", name: "同欣電",   industry: "半導體封測",          pf: 0.27, sharpe: -10.39, note: "-75% 回撤" }
+
+  # ── 自 pinned 移出（嚴重虧損，2026-05-26 驗證）────────────
+  - { code: "2303", name: "聯電",     industry: "晶圓代工",            pf: 0.74, sharpe: -2.14 }
+  - { code: "6213", name: "聯茂",     industry: "銅箔基板 CCL",        pf: 0.53, sharpe: -3.91 }
+  - { code: "4991", name: "環宇-KY",  industry: "化合物半導體",        pf: 0.24, sharpe: -10.75 }
+  - { code: "6147", name: "頎邦",     industry: "半導體封測",          pf: 0.58, sharpe: -4.05 }
+  - { code: "2103", name: "台橡",     industry: "化材（橡膠）",        pf: 0.61, sharpe: -3.10 }
+  - { code: "2337", name: "旺宏",     industry: "記憶體（NOR Flash）", pf: 0.61, sharpe: -2.72 }
+  - { code: "8046", name: "南電",     industry: "PCB（ABF 載板）",     pf: 0.00, sharpe: -74.22 }
+
+# ─────────────────────────────────────────────────────────────
+# long_term_hold：長期持有清單
+# 列在此處的股票不納入止損/止盈監控，由人工決定出場時機
+# 適合基本面持股、核心持倉等不希望被短期波動觸發自動賣出的標的
+# ─────────────────────────────────────────────────────────────
+long_term_hold:
+  - { code: "0050", name: "元大台灣50", note: "長期核心持倉，包含台積電等優質藍籌" }
