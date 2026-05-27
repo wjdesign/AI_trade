@@ -52,20 +52,51 @@ load_dotenv()
 # 1. 參數設定
 # =============================================================================
 
-INITIAL_CAPITAL   = 68000   # 原始投入資金（元），用於計算累計損益
-TOTAL_BUDGET      = 46000   # 總預算（元）
-MAX_POSITIONS     = 4       # 最多同時持有部位數（TOTAL_BUDGET 46,000 ÷ MIN_ORDER_VALUE 11,000 = 4，與 _calc_position_size 動態退化結果一致）
-POSITION_SIZE     = TOTAL_BUDGET // MAX_POSITIONS  # 初始值，MIN_ORDER_VALUE 定義後由 _calc_position_size() 修正
+# ── 環境變數 helper：5 個常調參數可透過 env / GitHub Variables 覆蓋預設值 ──
+# 本機：.env 加 MAX_POSITIONS=3 之類
+# 雲端：Repo Settings → Variables → 加同名 Variable（不是 Secret，因為不敏感）
+# 任一變數未設或值不合法時 fallback 到下方預設值
+def _env_int(key: str, default: int) -> int:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        print(f"[警告] 環境變數 {key}='{val}' 不是有效整數，沿用預設值 {default}")
+        return default
+
+def _env_float(key: str, default: float) -> float:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        print(f"[警告] 環境變數 {key}='{val}' 不是有效浮點數，沿用預設值 {default}")
+        return default
+
+def _env_bool(key: str, default: bool) -> bool:
+    val = os.environ.get(key, "").strip().lower()
+    if not val:
+        return default
+    return val in {"true", "1", "yes", "on"}
 
 
-STOP_LOSS_PCT        = 0.03   # 強制止損：虧損 3%（回測驗證：2% 橫盤假止損過多，3% 最大回撤控制較優）
+INITIAL_CAPITAL   = 68000                                # 原始投入資金（元），用於計算累計損益
+TOTAL_BUDGET      = _env_int("TOTAL_BUDGET", 46000)      # 總預算（元）。可透過環境變數覆蓋
+MAX_POSITIONS     = _env_int("MAX_POSITIONS", 4)         # 最多同時持有部位數。可透過環境變數覆蓋
+POSITION_SIZE     = TOTAL_BUDGET // MAX_POSITIONS        # 初始值，MIN_ORDER_VALUE 定義後由 _calc_position_size() 修正
+
+
+STOP_LOSS_PCT        = _env_float("STOP_LOSS_PCT", 0.03) # 強制止損%。可透過環境變數覆蓋（例如 "0.025" = 2.5%）
 TRAILING_START       = 0.015   # 移動止盈啟動點：獲利達 1.5%
 TRAILING_PULLBACK    = 0.015    # 移動止盈觸發（ATR 不足時的保底固定回撤）
 TRAILING_ATR_MULT    = 0.6     # 動態回撤：從最高點回落 0.6×ATR 時出場（ATR 夠大時優先）
 BREAKEVEN_TRIGGER    = 0.02    # 成本保衛：獲利達 2% 時自動將止損上移至成本價
 TIME_STOP_BDAYS      = 5       # 時間停損：持有超過 N 個工作天仍未觸發其他出場條件 → 強制出場，釋放資金
 SLIPPAGE_LIMIT       = 0.01    # 滑點保護：買賣價差 > 1%（零股市場天生價差較大，原 0.5% 過嚴）
-MIN_ORDER_VALUE      = 11_000   # 最小下單金額（元）：確保手續費占比 < 0.1%，避免最低手續費侵蝕獲利
+MIN_ORDER_VALUE      = _env_int("MIN_ORDER_VALUE", 11_000)  # 最小下單金額（元）。可透過環境變數覆蓋
 
 
 # 正式交易雙重確認字串。長度刻意設計到「不可能不小心打對」的程度，
@@ -163,7 +194,7 @@ def _calc_position_size(total_budget: float) -> int:
 POSITION_SIZE = _calc_position_size(TOTAL_BUDGET)
 
 # Phase 1 優化參數
-SENTIMENT_ENABLED  = False   # 新聞情緒評分開關：False → 跳過 AI 分析，直接進入策略掃描
+SENTIMENT_ENABLED  = _env_bool("SENTIMENT_ENABLED", False)   # 新聞情緒評分開關。可透過環境變數覆蓋（"true" 或 "false"）
 SENTIMENT_SMOOTH_N = 3      # 1.1 情緒平滑：保留最近 N 次分數取均值
 RISK_PER_TRADE     = TOTAL_BUDGET * STOP_LOSS_PCT   # 1.2 ATR 動態部位：每筆承擔最大損失 (元)
 RSI_OVERBOUGHT     = 70                             # 1.3 RSI 超買門檻：超過不進場

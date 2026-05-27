@@ -149,6 +149,15 @@ jobs:
           #   只有 SIMULATION=false 還不夠，必須同時設 CONFIRM_REAL_MONEY=I_KNOW_THIS_IS_REAL_MONEY
           #   兩者皆正確時才會真的進入正式模式，任何一項缺漏都會 fallback 到模擬
           CONFIRM_REAL_MONEY:   ${{ secrets.CONFIRM_REAL_MONEY || '' }}
+          # ── 策略參數 Variables（非敏感，可在 Repo Settings → Variables tab 設定）──
+          # 5 個常調參數，未設定時 bot.py 用內建預設值
+          # 改值：到 GitHub → Repo Settings → Secrets and variables → Actions → Variables tab → 新增/編輯
+          # 改完下次 cron 跑就用新值，不用 commit / push 任何程式碼
+          MAX_POSITIONS:        ${{ vars.MAX_POSITIONS     || '' }}  # 預設 4
+          TOTAL_BUDGET:         ${{ vars.TOTAL_BUDGET      || '' }}  # 預設 46000
+          STOP_LOSS_PCT:        ${{ vars.STOP_LOSS_PCT     || '' }}  # 預設 0.03（3%）
+          MIN_ORDER_VALUE:      ${{ vars.MIN_ORDER_VALUE   || '' }}  # 預設 11000
+          SENTIMENT_ENABLED:    ${{ vars.SENTIMENT_ENABLED || '' }}  # 預設 false
           # HTTPS_PROXY: 選填，若需要 Proxy 才能連 Telegram，請在 Secrets 加入後取消此行註解
           # HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
         run: python bot.py
