@@ -78,12 +78,56 @@ timeout 30 uv run python bot.py
 |------|------|
 | 商業策略（進場/出場/排序） | ⚠️ 改動前先讓 Wayne 確認；改完後一定要跑回測 [batch_backtest.py](batch_backtest.py) 驗證 |
 | 預算/部位計算 | ⚠️ 雙層保護（`budget_cap` + `strict_cap`）+ 第三層 `broker_buy_limit`（若可用）的設計不可破壞 |
-| `PINNED_STOCKS` / `CANDIDATE_STOCKS` | ⚠️ 改之前用 [batch_backtest.py](batch_backtest.py) 驗證；不要把賠錢股放回 PINNED |
-| `LONG_TERM_HOLD` | ⚠️ 列在此處的股票不會被自動停損，加任何 ticker 前確認用戶意圖 |
+| `PINNED_STOCKS` / `CANDIDATE_STOCKS` | ⚠️ **不要動 bot.py！** 改 [config/watchlist.yaml](config/watchlist.yaml) — 改之前用 batch_backtest.py 驗證 |
+| `LONG_TERM_HOLD` | ⚠️ **不要動 bot.py！** 改 watchlist.yaml — 列在此處的股票不會被自動停損 |
 | Shioaji API 呼叫（login/logout/place_order） | ⚠️ 任何 raise 路徑都要先 try logout |
 | 文件 / 註解 / docstring | ✅ 自由改 |
 | 環境變數讀取 / 設定驗證 | ✅ 自由改（保持向下相容） |
 | Telegram 通知文字 / 格式 | ✅ 自由改 |
+
+---
+
+## ⚙️ 修改策略參數 / 監控清單的正確方式
+
+不同類型的設定有不同的修改路徑。**走錯路徑會繞遠路或破壞東西**。
+
+### A. 5 個常調策略參數（雲端 UI 改最快）
+
+`MAX_POSITIONS`、`TOTAL_BUDGET`、`STOP_LOSS_PCT`、`MIN_ORDER_VALUE`、`SENTIMENT_ENABLED` 已透過 env vars 暴露。
+
+| 環境 | 修改路徑 |
+|------|---------|
+| 雲端（推薦） | Repo Settings → Secrets and variables → Actions → **Variables** tab → 新增/編輯 |
+| 本機 | `.env` 加同名 env var |
+
+bot.py 內 `_env_int / _env_float / _env_bool` helpers 處理 fallback：env var 沒設 / 值不合法 → 印警告 → 用 [bot.py](bot.py) 內預設值。
+
+**不要動 bot.py 內 `MAX_POSITIONS = _env_int(...)` 那行**。要改預設值才動程式碼。
+
+### B. 其他策略參數（要動 bot.py）
+
+`TRAILING_START`、`TRAILING_PULLBACK`、`TRAILING_ATR_MULT`、`BREAKEVEN_TRIGGER`、`TIME_STOP_BDAYS`、`SLIPPAGE_LIMIT`、`RSI_OVERBOUGHT`、`RVOL_MIN`、`VWAP_MAX_GAP`、`ATR_MAX_PCT`、`MA_TREND_PERIOD`、`MARKET_INDEX`、`SCAN_INTERVAL` 等。
+
+→ 編輯 bot.py → commit → push → 隔天 cron 用新版
+
+### C. 監控清單（任何修改都改 yaml）
+
+`PINNED_STOCKS` / `CANDIDATE_STOCKS` / `LONG_TERM_HOLD` 三個清單**全部在 [config/watchlist.yaml](config/watchlist.yaml)**。
+
+| 動作 | 怎麼做 |
+|------|--------|
+| 加股票 | 在對應 section 加 `- { code: "1234", name: "...", industry: "..." }` |
+| 移除股票 | 刪 / 註解掉那行 |
+| 重分類（PINNED ↔ CANDIDATE） | 在兩個 section 間搬動 |
+| **雲端立即改** | 用 GitHub 網頁 UI 編輯 yaml → 直接 commit on web |
+
+**不要動 bot.py 內 `_load_watchlist()` 函式**（除非要改 schema）。
+
+### D. 雲端跑用什麼版本？
+
+- **環境變數 / Variables**：即時生效（下次 cron 跑就用新值，**不用 commit**）
+- **bot.py 程式碼**：必須 commit + push（雲端 checkout main 最新版）
+- **watchlist.yaml**：必須 commit + push（檔案在 repo 內）
 
 ---
 
