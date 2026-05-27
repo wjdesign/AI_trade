@@ -625,6 +625,15 @@ class AITradingBot:
                 send_notify(err_msg)
             except Exception:
                 pass
+            # 失敗前主動 logout，避免後端殘留 session 阻塞下次啟動。
+            # 沒做這個的話，下次啟動會撞 "exclusive access lost"，
+            # 必須等永豐金後端 timeout（10-15 分鐘）才能釋放。
+            try:
+                print("[初始化] 主動 logout 釋放後端 session...")
+                self.api.logout()
+                print("[初始化] logout 成功，session 已釋放")
+            except Exception as logout_err:
+                print(f"[初始化] logout 失敗（忽略）: {type(logout_err).__name__}: {logout_err}")
             raise RuntimeError(err_msg)
 
         ca_path = os.environ["CA_CERT_PATH"].strip()
