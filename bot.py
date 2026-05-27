@@ -1123,19 +1123,19 @@ class AITradingBot:
 
     def format_watch_list(self, codes: list[str] | None = None) -> str:
         """
-        把監控代號 list 轉成多行「代號 名稱」格式，供 print / Telegram 使用。
+        把監控代號 list 轉成「代號 名稱、代號 名稱、...」單行格式，供 print / Telegram 使用。
         從 self.api.Contracts.Stocks 查名稱（CA 啟用後合約已 loaded 進記憶體）。
         查不到名稱顯示「?」，不會 raise。
         """
         codes = codes if codes is not None else self.watch_list
-        lines = []
+        items = []
         for code in codes:
             try:
                 name = self.api.Contracts.Stocks[code].name
             except (KeyError, AttributeError, TypeError):
                 name = "?"
-            lines.append(f"  {code} {name}")
-        return "\n".join(lines)
+            items.append(f"{code} {name}")
+        return "、".join(items)
 
     def get_positions_summary(self) -> str:
         """回傳持倉摘要字串（供啟動通知與定時推播使用）"""
@@ -2555,7 +2555,7 @@ if __name__ == "__main__":
         f"部位上限：{MAX_POSITIONS} 檔 | 單筆：{POSITION_SIZE:,} 元\n"
         f"止損 {STOP_LOSS_PCT:.0%} | 移動止盈 {TRAILING_START:.1%}→{TRAILING_PULLBACK:.1%} | 滑點 {SLIPPAGE_LIMIT:.1%}\n"
         f"監控清單（{len(bot.watch_list)} 檔）：\n{bot.format_watch_list()}\n"
-        f"啟動時間：{now_tw().strftime('%Y-%m-%d %H:%M:%S')} CST\n"
+        f"啟動時間：{now_tw().strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)\n"
         f"\n[目前持倉]\n{positions_summary}\n"
         f"\n{pnl_summary}\n"
         f"\n{order_check_result}\n"
@@ -2579,7 +2579,7 @@ if __name__ == "__main__":
             )
 
             if in_market:
-                print(f"\n[{now.strftime('%H:%M:%S')} CST] 交易時間掃描  部位：{list(bot.positions.keys()) or '無'}")
+                print(f"\n[{now.strftime('%H:%M:%S')} +08:00] 交易時間掃描  部位：{list(bot.positions.keys()) or '無'}")
 
                 # 定期重查 settlements()，確保賣出應收款及時反映至 TOTAL_BUDGET
                 if time.time() - last_budget_refresh >= BUDGET_REFRESH_INTERVAL:
@@ -2670,7 +2670,7 @@ if __name__ == "__main__":
                     print(f"[策略] 市場情緒不足（{score:.2f}），不進場。")
 
             else:
-                print(f"[{now.strftime('%H:%M:%S')} CST] 非交易時間  部位：{list(bot.positions.keys()) or '無'}")
+                print(f"[{now.strftime('%H:%M:%S')} +08:00] 非交易時間  部位：{list(bot.positions.keys()) or '無'}")
                 if time.time() - last_digest_sent >= NEWS_DIGEST_INTERVAL:
                     digest = market_agg.format_telegram_digest(limit=10)
                     send_notify(
