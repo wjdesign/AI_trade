@@ -18,7 +18,12 @@ from collections import deque
 from dataclasses import dataclass, field
 
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
-sys.stdout.reconfigure(line_buffering=True)
+# Windows cp950 console 無法輸出 emoji (🟢/🔴 等)，強制 UTF-8 避免崩潰
+try:
+    sys.stdout.reconfigure(line_buffering=True, encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError, TypeError):
+    pass
 
 import shioaji as sj
 import pandas as pd
@@ -413,7 +418,12 @@ def send_notify(msg: str) -> None:
 
 
 def get_ai_sentiment(news_text: str) -> tuple[float, str]:
-    """OpenAI 語意分析：回傳 (情緒分數 -1.0~1.0, 繁中摘要)"""
+    """OpenAI 語意分析：回傳 (情緒分數 -1.0~1.0, 繁中摘要)
+    SENTIMENT_ENABLED=False 時 early return 1.0，避免「啟動分析」之類
+    無條件呼叫者打到 OpenAI 浪費費用或在 API key 為 dummy 時報 401。
+    """
+    if not SENTIMENT_ENABLED:
+        return 1.0, "情緒分析已停用 (SENTIMENT_ENABLED=False)"
     try:
         prompt = (
             "你是台股分析師。請根據以下新聞標題分析對整體台股的影響，"
@@ -623,8 +633,17 @@ class AITradingBot:
         self.api.activate_ca(ca_path=ca_path, ca_passwd=ca_pass)
         print("[初始化] CA 憑證啟用成功")
 
-        self.api.set_default_account(accounts[1])
-        print(f"[初始化] 預設帳戶：{accounts[1]}")
+        # 找證券帳戶當預設（bot 只交易股票/零股）。
+        # 原作者寫死 accounts[1] 假設「[0]=期貨、[1]=證券」，
+        # 但純證券戶只有 1 個帳戶會 IndexError。改用 type 名稱過濾，
+        # 沒申請期貨帳戶也能正常運作。Shioaji 1.3.2 沒有 sj.constant.AccountType，
+        # 所以用 type(a).__name__ 比對最穩。
+        stock_acc = next(
+            (a for a in accounts if type(a).__name__ == "StockAccount"),
+            accounts[0],
+        )
+        self.api.set_default_account(stock_acc)
+        print(f"[初始化] 預設帳戶：{stock_acc}")
         print(f"[初始化] 所有帳戶：{[str(a.account_id) for a in accounts]}")
 
         self.positions: dict[str, Position] = {}
@@ -1102,6 +1121,22 @@ class AITradingBot:
         except Exception as e:
             print(f"[持倉] 查詢失敗: {e}")
 
+    def format_watch_list(self, codes: list[str] | None = None) -> str:
+        """
+        把監控代號 list 轉成「代號 名稱、代號 名稱、...」單行格式，供 print / Telegram 使用。
+        從 self.api.Contracts.Stocks 查名稱（CA 啟用後合約已 loaded 進記憶體）。
+        查不到名稱顯示「?」，不會 raise。
+        """
+        codes = codes if codes is not None else self.watch_list
+        items = []
+        for code in codes:
+            try:
+                name = self.api.Contracts.Stocks[code].name
+            except (KeyError, AttributeError, TypeError):
+                name = "?"
+            items.append(f"{code} {name}")
+        return "、".join(items)
+
     def get_positions_summary(self) -> str:
         """回傳持倉摘要字串（供啟動通知與定時推播使用）"""
         try:
@@ -1225,7 +1260,18 @@ class AITradingBot:
         計算累計損益：
           總資產 = 帳戶餘額 + 所有未交割金額 + 持倉市值
           累計損益 = 總資產 - INITIAL_CAPITAL
+
+        模擬模式下 account_balance() 與 settlements() 都不支援（Shioaji 限制），
+        會回 0 導致「總資產 0 - INITIAL_CAPITAL 68000 = -100%」誤導訊息，
+        因此模擬模式直接 early return 顯示「不適用」。
         """
+        if self._simulation:
+            return (
+                "[累計損益]\n"
+                "  （模擬模式：account_balance/settlements API 不支援，無法計算）\n"
+                "  （切換至正式交易後此欄會顯示真實累計損益）"
+            )
+
         try:
             bal = self.api.account_balance()
             acc_balance = float(bal.acc_balance)
@@ -2476,7 +2522,7 @@ if __name__ == "__main__":
     print("=" * 55)
     _mode = "simulation=True（模擬）" if bot._simulation else "simulation=False（正式交易⚠️）"
     print(f"AI 交易系統啟動  模式：{_mode}")
-    print(f"監控清單：{list(PINNED_STOCKS)}")
+    print(f"監控清單（{len(bot.watch_list)} 檔）：\n{bot.format_watch_list()}")
     print(f"最大部位：{MAX_POSITIONS}  單筆：{POSITION_SIZE:,} 元")
     print(f"止損：{STOP_LOSS_PCT:.0%}  移動止盈啟動：{TRAILING_START:.1%}  回吐：{TRAILING_PULLBACK:.1%}")
     print(f"滑點上限：{SLIPPAGE_LIMIT:.1%}")
@@ -2508,8 +2554,8 @@ if __name__ == "__main__":
         f"模式：{'simulation=True（模擬）' if bot._simulation else 'simulation=False（正式交易⚠️）'}\n"
         f"部位上限：{MAX_POSITIONS} 檔 | 單筆：{POSITION_SIZE:,} 元\n"
         f"止損 {STOP_LOSS_PCT:.0%} | 移動止盈 {TRAILING_START:.1%}→{TRAILING_PULLBACK:.1%} | 滑點 {SLIPPAGE_LIMIT:.1%}\n"
-        f"監控清單：{list(PINNED_STOCKS)}\n"
-        f"啟動時間：{now_tw().strftime('%Y-%m-%d %H:%M:%S')} CST\n"
+        f"監控清單（{len(bot.watch_list)} 檔）：\n{bot.format_watch_list()}\n"
+        f"啟動時間：{now_tw().strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)\n"
         f"\n[目前持倉]\n{positions_summary}\n"
         f"\n{pnl_summary}\n"
         f"\n{order_check_result}\n"
@@ -2533,7 +2579,7 @@ if __name__ == "__main__":
             )
 
             if in_market:
-                print(f"\n[{now.strftime('%H:%M:%S')} CST] 交易時間掃描  部位：{list(bot.positions.keys()) or '無'}")
+                print(f"\n[{now.strftime('%H:%M:%S')} +08:00] 交易時間掃描  部位：{list(bot.positions.keys()) or '無'}")
 
                 # 定期重查 settlements()，確保賣出應收款及時反映至 TOTAL_BUDGET
                 if time.time() - last_budget_refresh >= BUDGET_REFRESH_INTERVAL:
@@ -2624,7 +2670,7 @@ if __name__ == "__main__":
                     print(f"[策略] 市場情緒不足（{score:.2f}），不進場。")
 
             else:
-                print(f"[{now.strftime('%H:%M:%S')} CST] 非交易時間  部位：{list(bot.positions.keys()) or '無'}")
+                print(f"[{now.strftime('%H:%M:%S')} +08:00] 非交易時間  部位：{list(bot.positions.keys()) or '無'}")
                 if time.time() - last_digest_sent >= NEWS_DIGEST_INTERVAL:
                     digest = market_agg.format_telegram_digest(limit=10)
                     send_notify(
