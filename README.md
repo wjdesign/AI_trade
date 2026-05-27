@@ -320,44 +320,129 @@ uv run python backtest.py --code 2330,2454,1590 --start 2021-01-01 --yf
 
 ## 參數說明
 
-**主程式（bot.py）**
+參數分 4 類，依「**修改頻率**」+「**改的地方**」分類。
+
+### 🟢 GitHub Variables（5 個常調策略參數 — 雲端 UI 改最快）
+
+雲端：Repo Settings → Secrets and variables → Actions → **Variables** tab → 改完下次 cron 立即生效，**不用 commit / push**。
+本機：在 `.env` 加同名 env var。
+
+| 名稱 | 預設值 | 說明 | 何時要改 |
+|------|--------|------|---------|
+| `MAX_POSITIONS` | `4` | 最多同時持有部位數 | 想增加/減少同時投資的股票數量 |
+| `TOTAL_BUDGET` | `46000` | 總可用資金（元） | 增加 / 減少投入資金 |
+| `STOP_LOSS_PCT` | `0.03` | 強制止損百分比（與 1.5×ATR 取嚴格者） | 想調整單筆能承受的虧損上限 |
+| `MIN_ORDER_VALUE` | `11000` | 最小下單金額（避免手續費侵蝕） | 改了 TOTAL_BUDGET 或想接受更小單時 |
+| `SENTIMENT_ENABLED` | `false` | 情緒評分開關（`false`/`true`） | 想啟用 GPT-4o 新聞情緒分析（需先充值 OpenAI） |
+
+> ⚠ 任一變數沒設時 → 用上方「預設值」。值不合法時 → 印警告並用預設值（不會 crash bot）。
+
+### 🔵 GitHub Secrets（敏感資料 — 需重新設定才能改）
+
+雲端：Repo Settings → Secrets and variables → Actions → **Secrets** tab。
+本機：在 `.env` 加同名 env var。
+
+#### 🔴 必要 Secrets（缺一不可，否則 bot 跑不起來）
+| 名稱 | 說明 |
+|------|------|
+| `API_KEY` | 永豐金 Shioaji API Key |
+| `SECRET_KEY` | 永豐金 Shioaji Secret Key |
+| `CA_CERT_B64` | CA 憑證 `Sinopac.pfx` 的 base64 字串（雲端用） |
+| `CA_PASSWORD` | CA 憑證密碼（通常是身分證字號大寫） |
+| `OPENAI_API_KEY` | OpenAI API Key（**情緒分析關閉時可填 `dummy_skip_sentiment`**） |
+
+#### 🟢 選用 Secrets（推薦設）
+| 名稱 | 說明 |
+|------|------|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（即時推播訊號用） |
+| `TELEGRAM_CHAT_ID` | Telegram Chat ID（推到哪個對話） |
+
+#### ⛔ **故意不設**的 Secrets（保護機制）
+| 名稱 | 預設行為 | 設了會怎樣 |
+|------|---------|----------|
+| `SIMULATION` | 未設 = `true`（模擬交易，安全預設） | 設 `false` 才會嘗試正式交易（要配合下面） |
+| `CONFIRM_REAL_MONEY` | 未設 = 雙重防呆生效 | 設為 `I_KNOW_THIS_IS_REAL_MONEY` 才解鎖正式交易 |
+
+> 🛡 即使 `SIMULATION=false`，只要 `CONFIRM_REAL_MONEY` 沒設或設錯，bot 會 fallback 到模擬模式並印警告。**多一道保險**。
+
+詳見 [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md) 的「切換正式交易 SOP」。
+
+### 🟡 監控股票清單（[config/watchlist.yaml](config/watchlist.yaml)）
+
+`PINNED_STOCKS`、`CANDIDATE_STOCKS`、`LONG_TERM_HOLD` 三個清單**全部在 yaml 檔**。
+
+| 動作 | 在 yaml 哪邊改 |
+|------|--------------|
+| 加新監控股票 | `pinned:` 區加 `- { code: "1234", name: "...", industry: "..." }` |
+| 把某檔暫時不交易 | 從 `pinned:` 搬到 `candidates:` |
+| 把某檔不被自動停損 | 加到 `long_term_hold:` |
+
+**改的方式**：
+- **網頁編輯**（最方便）：到 https://github.com/wjdesign/AI_trade/blob/main/config/watchlist.yaml → 點 🖉 → 編輯 → Commit on web
+- **本機編輯**：改 `config/watchlist.yaml` → commit → push
+
+改完雲端隔天 cron 跑就用新版。
+
+### ⚪ bot.py 內其他常數（不常調，要改需動 code）
+
+這些是技術指標 / 系統時序，**很少改**。要改：編輯 bot.py → commit → push。
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `INITIAL_CAPITAL` | 68,000 元 | 原始投入資金（用於計算累計損益） |
-| `TOTAL_BUDGET` | 46,000 元 | 總可用資金 |
-| `MAX_POSITIONS` | 4 | 最多同時持有部位數（46,000 ÷ 11,000 = 4 與 _calc_position_size 動態退化結果一致） |
-| `POSITION_SIZE` | 11,500 元 | 單次進場金額（自動計算：TOTAL_BUDGET ÷ MAX_POSITIONS） |
-| `SENTIMENT_ENABLED` | `False` | 情緒評分開關：`False` → 跳過 AI 新聞分析（節省費用） |
-| `STOP_LOSS_PCT` | 3% | 強制止損（與 1.5×ATR 取嚴格者） |
+| `INITIAL_CAPITAL` | 68,000 元 | 原始投入資金（用於計算累計損益，模擬模式不適用） |
+| `POSITION_SIZE` | 自動算 | 單次進場金額 = TOTAL_BUDGET ÷ MAX_POSITIONS |
 | `SLIPPAGE_LIMIT` | 1% | 最大允許買賣價差（零股市場較大） |
-| `MIN_ORDER_VALUE` | 11,000 元 | 最小下單金額（避免手續費侵蝕） |
 | `TRAILING_START` | 1.5% | 移動止盈啟動獲利點 |
 | `TRAILING_PULLBACK` | 1.5% | 固定回吐觸發賣出（ATR 不足時的保底值） |
 | `TRAILING_ATR_MULT` | 0.6 | 動態回撤倍數：從高點回落 0.6×ATR 觸發 |
-| `BREAKEVEN_TRIGGER` | 2% | 成本保衛啟動獲利門檻 |
+| `BREAKEVEN_TRIGGER` | 2% | 成本保衛啟動獲利門檻（獲利達 2% 後停損上移至成本） |
 | `TIME_STOP_BDAYS` | 5 | 波段時間停損（工作天）：滿 5 天未漲透 → 釋放資金 |
 | `ATR_MAX_PCT` | 3% | ATR 過熱保護（跳空缺口風險） |
-| `MA_TREND_PERIOD` | 50 | 趨勢過濾均線 |
-| `RVOL_MIN` | 1.5 | 相對成交量下限（現量 / 5 日均量） |
-| `RSI_OVERBOUGHT` | 70 | RSI 超買門檻 |
-| `RSI_OVERBOUGHT_LAX` | 75 | RSI 放寬門檻（趨勢市，RSI_DYNAMIC=True 時適用） |
+| `MA_TREND_PERIOD` | 50 | 趨勢過濾均線（個股需在 MA50 之上才進場） |
+| `RVOL_MIN` | 1.5 | 相對成交量下限（現量 / 5 日均量，量能放大確認） |
+| `RSI_OVERBOUGHT` | 70 | RSI 超買門檻（超過不進場） |
+| `RSI_OVERBOUGHT_LAX` | 75 | RSI 放寬門檻（趨勢市中 RSI_DYNAMIC=True 時適用） |
 | `RSI_DYNAMIC` | `True` | 動態 RSI：趨勢市中放寬超買門檻至 75 |
 | `VWAP_MAX_GAP` | 3% | VWAP 乖離率上限，超過視為過熱不追 |
 | `MARKET_INDEX` | `"0050"` | 大盤指數代碼 |
 | `SCAN_INTERVAL` | 60 秒 | 主循環掃描間隔 |
-| `NEWS_DIGEST_INTERVAL` | 1,800 秒 | 非交易時間推播間隔 |
+| `NEWS_DIGEST_INTERVAL` | 1,800 秒 | 非交易時間新聞推播間隔 |
+| `PENDING_ORDER_TIMEOUT` | 600 秒 | 委託逾時自動撤單 |
+| `BUDGET_REFRESH_INTERVAL` | 600 秒 | 預算重查間隔 |
+| `STATUS_REPORT_INTERVAL` | 1,800 秒 | 部位狀態推播間隔 |
 | `FUNNEL_SCAN_HOUR/MINUTE` | 09:20 | 每日漏斗掃描觸發時間 |
 | `FUNNEL_MAX_RESULTS` | 5 | 漏斗掃描每日最多加入監控的標的數 |
+| `REAL_MONEY_CONFIRMATION` | `"I_KNOW_THIS_IS_REAL_MONEY"` | 雙重防呆比對字串（不要動） |
 
-### 環境變數（影響執行模式）
+### 🛠 main.py 測試開關（只影響 main.py 連線測試）
 
-| 環境變數 | 預設 | 說明 |
-|---------|------|------|
-| `SIMULATION` | `true` | 交易模式。`true` = 模擬不動真錢；`false` = **正式交易（需配合 CONFIRM_REAL_MONEY）** |
-| `CONFIRM_REAL_MONEY` | （未設） | 正式交易雙重防呆字串，必須精確設為 `I_KNOW_THIS_IS_REAL_MONEY` 才會切換正式 |
+只在 `.env` 設，雲端不用。
 
-任一缺漏或設錯都會 fallback 到模擬模式並印警告。詳見 [.env.example](.env.example) 與 [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md)。
+| 環境變數 | 預設 | 啟用後 |
+|---------|------|--------|
+| `ENABLE_STOCK_TEST` | `false` | main.py 階段 2：模擬下證券單測試（買 2890 中信金 1 張 @ 18 元） |
+| `ENABLE_FUTURES_TEST` | `false` | main.py 階段 3：模擬下期貨單測試（需有期貨帳戶） |
+| `ENABLE_PROD_TEST` | `false` | main.py 階段 4：連正式環境查 API 測試狀態（需 Key 勾「正式環境」） |
+
+---
+
+## 速查：「我想改 X」對照表
+
+| 想做的事 | 改哪裡 | 雲端立即生效？ |
+|---------|-------|--------------|
+| 改最多部位數 | GitHub Variables `MAX_POSITIONS` | ✅ 是 |
+| 改總預算 | GitHub Variables `TOTAL_BUDGET` | ✅ 是 |
+| 改停損% | GitHub Variables `STOP_LOSS_PCT` | ✅ 是 |
+| 改最小下單 | GitHub Variables `MIN_ORDER_VALUE` | ✅ 是 |
+| 開/關情緒分析 | GitHub Variables `SENTIMENT_ENABLED` | ✅ 是 |
+| 加新監控股票 | [config/watchlist.yaml](config/watchlist.yaml) → commit | 🟡 要 commit |
+| 改 RSI / VWAP / MA 等技術指標 | [bot.py](bot.py) → commit | 🟡 要 commit |
+| 切換正式交易 | 永豐金後台勾「正式環境」+ 設 2 個 Secret | 🟡 要設 |
+| 改 Telegram bot | GitHub Secret `TELEGRAM_BOT_TOKEN` | ✅ 是 |
+| 換 API Key | GitHub Secret `API_KEY` + `SECRET_KEY` | ✅ 是 |
+| 緊急停止 | Actions → Disable workflow | ✅ 立刻 |
+
+詳細 SOP 見 [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md)。
 
 ---
 
