@@ -555,70 +555,76 @@ class AITradingBot:
         secret_key = os.environ["SECRET_KEY"].strip()
 
         print(f"[初始化] 嘗試登入（API_KEY 長度={len(api_key)}，SECRET_KEY 長度={len(secret_key)}）")
+        # login(fetch_contract=True, contracts_timeout=N) 一次完成登入 + 合約下載
+        # contracts_timeout 讓 login 阻塞等待合約完整載入，避免後續打 fetch_contracts 觸發
+        # APISUB/V1/SYS/CONTRACT concurrent 衝突。timeout=0 為非阻塞，這裡用 30 秒等候。
+        # 從 upstream sync (yinyaoqing/AI_trade)：解決 GitHub Actions 雲端 runner 跑
+        # fetch_contracts 100% 失敗（"exclusive access lost (concurrent API call started)"）的問題。
         accounts = self.api.login(
             api_key=api_key,
             secret_key=secret_key,
-            fetch_contract=False,
+            fetch_contract=True,
+            contracts_timeout=30000,
+            contracts_cb=lambda security_type: print(
+                f"[初始化][contracts_cb] {security_type} 載入完成"
+            ),
         )
         print(f"[初始化] 登入回應：{accounts}")
 
-        print("[初始化] 下載合約中...")
-        # 永豐後端 PySolace 偶有逾時，採用指數退避重試（5s → 15s → 30s → 60s → 120s）
-        # 並逐步加大 timeout，最後一次嘗試 reconnect session
-        MAX_CONTRACT_RETRIES = 5
-        BACKOFF_SECS = [5, 15, 30, 60, 120]
-        contract_ok = False
-        last_error: str = ""
-        for _retry in range(MAX_CONTRACT_RETRIES):
-            try:
-                timeout_ms = 60000 + _retry * 30000   # 60s → 180s
-                print(
-                    f"[初始化] [API:fetch_contracts] 嘗試 {_retry + 1}/{MAX_CONTRACT_RETRIES}  "
-                    f"參數: contract_download=True, contracts_timeout={timeout_ms}ms"
-                )
-                self.api.fetch_contracts(
-                    contract_download=True,
-                    contracts_timeout=timeout_ms,
-                    contracts_cb=lambda: print("[初始化] [API:fetch_contracts] callback ─ 合約下載完成"),
-                )
-                contract_ok = True
-                print(f"[初始化] [API:fetch_contracts] 回傳: 成功（共嘗試 {_retry + 1} 次）")
-                break
-            except Exception as e:
-                err_type = type(e).__name__
-                err_str  = str(e) or "（無訊息）"
-                last_error = f"{err_type}: {err_str}"
-                print(
-                    f"[初始化] [API:fetch_contracts] 回傳: ❌ 失敗\n"
-                    f"  異常類型 : {err_type}\n"
-                    f"  錯誤訊息 : {err_str}"
-                )
-                # 偵測「exclusive access lost」→ session 衝突，嘗試重連
-                if "exclusive access lost" in err_str.lower() or "concurrent" in err_str.lower():
-                    print(f"[初始化] [API:fetch_contracts] 偵測 session 衝突，嘗試 logout/login 重連...")
-                    try:
-                        self.api.logout()
-                        print(f"[初始化] [API:logout] 回傳: 成功")
-                    except Exception as e2:
-                        print(f"[初始化] [API:logout] 例外（忽略）: {type(e2).__name__}: {e2}")
-                    time.sleep(3)
-                    try:
-                        accounts2 = self.api.login(
-                            api_key=api_key, secret_key=secret_key, fetch_contract=False
-                        )
-                        print(f"[初始化] [API:login] 重連回傳: {accounts2}")
-                    except Exception as e3:
-                        print(f"[初始化] [API:login] 重連失敗 {type(e3).__name__}: {e3}")
-                wait = BACKOFF_SECS[_retry] if _retry < len(BACKOFF_SECS) else 120
-                print(f"[初始化] 等 {wait}s 後重試...")
-                time.sleep(wait)
+        # 檢查合約是否已透過 login 載入（避免重複下載觸發 concurrent 衝突）
+        # 用 PINNED_STOCKS 抽樣驗證合約是否可用（ContractCategory 不支援 iter/len）
+        contracts_loaded = False
+        # 環境診斷
+        try:
+            print(f"[初始化][診斷] Shioaji 版本: {getattr(sj, '__version__', 'unknown')}")
+        except Exception as e:
+            print(f"[初始化][診斷] 取得 Shioaji 版本失敗: {e}")
+        try:
+            status = getattr(self.api.Contracts, "status", "unknown")
+            print(f"[初始化][診斷] Contracts.status = {status}")
+            if str(status).endswith("Fetched"):
+                contracts_loaded = True
+        except Exception as e:
+            print(f"[初始化][診斷] 取得 Contracts.status 失敗: {e}")
 
-        if not contract_ok:
-            # 最終仍失敗：推 Telegram 通知並結束（讓 GitHub Actions 標示失敗）
+        # 抽樣驗證：嘗試從 PINNED_STOCKS 取得前 5 檔合約，確認可正常存取
+        sample_codes = list(PINNED_STOCKS)[:5]
+        sample_ok = 0
+        for code in sample_codes:
+            try:
+                c = self.api.Contracts.Stocks[code]
+                if c is not None:
+                    sample_ok += 1
+            except Exception as e:
+                print(f"[初始化][診斷] 取得 {code} 失敗: {type(e).__name__}: {e}")
+        print(f"[初始化][診斷] 抽樣驗證：{sample_ok}/{len(sample_codes)} 檔可正常取得")
+        if sample_ok >= 3:
+            contracts_loaded = True
+            print(f"[初始化] ✅ 合約抽樣驗證通過")
+        else:
+            print(f"[初始化] ⚠️ 合約抽樣未通過（{sample_ok}/{len(sample_codes)}）")
+
+        # login 已自動下載合約，不再呼叫 fetch_contracts（會引發 concurrent 衝突）
+        # 若抽樣未通過，多等幾秒讓 contracts_cb 完成，再驗證一次
+        if not contracts_loaded:
+            for wait_sec in (5, 10, 20):
+                print(f"[初始化] 等 {wait_sec}s 後重新抽樣驗證...")
+                time.sleep(wait_sec)
+                sample_ok2 = sum(
+                    1 for code in sample_codes
+                    if self._safe_get_contract(code) is not None
+                )
+                print(f"[初始化][診斷] 再次抽樣：{sample_ok2}/{len(sample_codes)} 檔")
+                if sample_ok2 >= 3:
+                    contracts_loaded = True
+                    break
+
+        if not contracts_loaded:
             err_msg = (
-                f"❌ Shioaji [API:fetch_contracts] 連續 {MAX_CONTRACT_RETRIES} 次失敗\n"
-                f"最後錯誤：{last_error or '未知'}\n"
-                f"可能原因：永豐後端維護、session 衝突或網路問題"
+                f"❌ Shioaji 合約載入失敗\n"
+                f"login(contracts_timeout=30000) 後 PINNED_STOCKS 抽樣仍無法取得合約\n"
+                f"Shioaji 版本：{getattr(sj, '__version__', 'unknown')}\n"
+                f"建議：稍後重試，或檢查 Shioaji 版本相容性"
             )
             print(f"[初始化] {err_msg}")
             try:
@@ -626,8 +632,6 @@ class AITradingBot:
             except Exception:
                 pass
             # 失敗前主動 logout，避免後端殘留 session 阻塞下次啟動。
-            # 沒做這個的話，下次啟動會撞 "exclusive access lost"，
-            # 必須等永豐金後端 timeout（10-15 分鐘）才能釋放。
             try:
                 print("[初始化] 主動 logout 釋放後端 session...")
                 self.api.logout()
@@ -892,6 +896,19 @@ class AITradingBot:
             print("[初始化] 訂單即時回呼已註冊")
         except Exception as e:
             print(f"[初始化] 訂單回呼註冊失敗: {e}")
+
+    def _safe_get_contract(self, code: str):
+        """安全取得合約（多種 Shioaji 版本介面相容）。
+        從 upstream sync (yinyaoqing/AI_trade)。
+        """
+        try:
+            return self.api.Contracts.Stocks[code]
+        except Exception:
+            pass
+        try:
+            return self.api.Contracts.Stocks.get(code)
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # 零股報價訂閱：訂閱 PINNED_STOCKS BidAsk，快取最新買賣報價
