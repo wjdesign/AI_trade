@@ -444,7 +444,10 @@ def _debug_env() -> None:
     """啟動時印出環境變數摘要（敏感值遮蔽），協助診斷 GitHub Actions 問題"""
     import base64
 
-    def mask(v: str, show: int = 4) -> str:
+    def mask(v: str, show: int = 2) -> str:
+        """敏感資料遮蔽：露頭 show + 尾 show 個字元，其餘用 *** 取代。
+        預設 show=2 → 對 44 字元 API key 只露 4/44 = 9%（之前 show=4 露 18%）。
+        """
         v = v.strip()
         if not v:
             return "(未設定)"
@@ -452,7 +455,8 @@ def _debug_env() -> None:
             return "***"
         return v[:show] + "***" + v[-show:]
 
-    vars_info = {
+    # ── 敏感資料（已遮罩） ──────────────────────────────────────
+    secrets_info = {
         "API_KEY":            os.environ.get("API_KEY", ""),
         "SECRET_KEY":         os.environ.get("SECRET_KEY", ""),
         "CA_CERT_PATH":       os.environ.get("CA_CERT_PATH", ""),
@@ -462,10 +466,32 @@ def _debug_env() -> None:
         "TELEGRAM_CHAT_ID":   os.environ.get("TELEGRAM_CHAT_ID", ""),
     }
 
-    print("[Debug] ── 環境變數摘要 ────────────────────────────")
-    for k, v in vars_info.items():
+    print("[Debug] ── 敏感變數（已遮罩） ──────────────────────")
+    for k, v in secrets_info.items():
         stripped = v.strip()
         print(f"  {k:<22}: {mask(stripped)}  (len={len(stripped)})")
+
+    # ── 模式控制變數 ────────────────────────────────────────
+    sim = os.environ.get("SIMULATION", "").strip()
+    confirm = os.environ.get("CONFIRM_REAL_MONEY", "").strip()
+    print("[Debug] ── 模式控制 ────────────────────────────────")
+    print(f"  {'SIMULATION':<22}: {sim or '(未設定 → 預設 true=模擬)'}")
+    print(f"  {'CONFIRM_REAL_MONEY':<22}: {mask(confirm) if confirm else '(未設定 → 防呆生效)'}")
+
+    # ── 策略參數（GitHub Variables；未設則 bot.py 內 fallback 預設值）──
+    strategy_vars = ["MAX_POSITIONS", "TOTAL_BUDGET", "STOP_LOSS_PCT", "MIN_ORDER_VALUE", "SENTIMENT_ENABLED"]
+    print("[Debug] ── 策略參數（GitHub Variables）─────────────")
+    for k in strategy_vars:
+        val = os.environ.get(k, "").strip()
+        print(f"  {k:<22}: {val or '(未設定 → 用 bot.py 預設)'}")
+
+    # ── bot.py 實際生效值（重要：這才是 bot 真的用的值）──────
+    print("[Debug] ── 實際生效值 ──────────────────────────────")
+    print(f"  {'MAX_POSITIONS (實際)':<22}: {MAX_POSITIONS}")
+    print(f"  {'TOTAL_BUDGET (實際)':<22}: {TOTAL_BUDGET:,}")
+    print(f"  {'STOP_LOSS_PCT (實際)':<22}: {STOP_LOSS_PCT}")
+    print(f"  {'MIN_ORDER_VALUE (實際)':<22}: {MIN_ORDER_VALUE:,}")
+    print(f"  {'SENTIMENT_ENABLED (實際)':<22}: {SENTIMENT_ENABLED}")
 
     # SECRET_KEY 額外診斷
     sk = os.environ.get("SECRET_KEY", "").strip()
