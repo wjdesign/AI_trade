@@ -1244,7 +1244,18 @@ class AITradingBot:
         計算累計損益：
           總資產 = 帳戶餘額 + 所有未交割金額 + 持倉市值
           累計損益 = 總資產 - INITIAL_CAPITAL
+
+        模擬模式下 account_balance() 與 settlements() 都不支援（Shioaji 限制），
+        會回 0 導致「總資產 0 - INITIAL_CAPITAL 68000 = -100%」誤導訊息，
+        因此模擬模式直接 early return 顯示「不適用」。
         """
+        if self._simulation:
+            return (
+                "[累計損益]\n"
+                "  （模擬模式：account_balance/settlements API 不支援，無法計算）\n"
+                "  （切換至正式交易後此欄會顯示真實累計損益）"
+            )
+
         try:
             bal = self.api.account_balance()
             acc_balance = float(bal.acc_balance)
