@@ -713,6 +713,11 @@ class AITradingBot:
         self._deal_buffer: dict[str, list] = {}
         # 違約交割警告冷卻：上次推播時間
         self._last_critical_alert: float = 0.0
+        # 異常通知節流：key=alert_key, value=last_sent_ts。同 key 訊息預設 30 分鐘冷卻
+        self._anomaly_alerts: dict[str, float] = {}
+        # 大盤健康監控：check_market_trend() 上次成功的時間
+        # 主迴圈會檢查 stale time，超過閾值推 Telegram 警示
+        self._last_market_check_success: float = 0.0
 
         # 註冊 Shioaji 委託 / 成交即時回呼
         self._register_order_callback()
@@ -1530,6 +1535,25 @@ class AITradingBot:
         return smoothed
 
     # ------------------------------------------------------------------
+    # 異常通知節流器：避免每分鐘失敗都推 Telegram 轟炸用戶
+    # ------------------------------------------------------------------
+    def _notify_anomaly(self, key: str, msg: str, cooldown_sec: int = 1800) -> None:
+        """節流式異常通知。同 key 訊息在 cooldown_sec 秒內只推一次。
+        用途：API 失敗、健康監控異常等「非致命但需要關注」的情境。
+        預設 30 分鐘冷卻 — 避免 5 處 except 在交易時段每分鐘都推。
+        """
+        now_ts = time.time()
+        last = self._anomaly_alerts.get(key, 0.0)
+        if now_ts - last < cooldown_sec:
+            return
+        print(f"[警示] {msg}")
+        try:
+            send_notify(f"⚠ [bot 警示]\n{msg}")
+        except Exception:
+            pass
+        self._anomaly_alerts[key] = now_ts
+
+    # ------------------------------------------------------------------
     # 1.2 ATR 動態部位：依個股波動率計算合理股數
     # ------------------------------------------------------------------
     def get_atr_qty(self, contract, current_price: float) -> int:
@@ -1552,6 +1576,12 @@ class AITradingBot:
             return qty
         except Exception as e:
             print(f"[ATR] {contract.code} 計算失敗: {e}，改用預算法")
+            # 節流通知：60 分鐘 cooldown（68 檔每分鐘掃描，避免轟炸）
+            self._notify_anomaly(
+                "atr_helper_fail",
+                f"[ATR] 計算失敗（會改用預算法 fallback）: {type(e).__name__}: {e}",
+                cooldown_sec=3600,
+            )
             return fallback
 
     # ------------------------------------------------------------------
@@ -1583,9 +1613,13 @@ class AITradingBot:
 
             label = "趨勢向上" if self._market_trend_up else "趨勢偏弱"
             print(f"[大盤] 0050={current:.2f}  MA20={ma20:.2f}  {label}")
+            self._last_market_check_success = time.time()    # 健康監控用
             return self._market_trend_up
         except Exception as e:
-            print(f"[大盤] 取得失敗: {e}")
+            err = f"[大盤] 取得失敗（連續失敗會跳過所有進場掃描）: {type(e).__name__}: {e}"
+            print(err)
+            # 推 Telegram 通知（30 分鐘 cooldown）— 之前 5 天 0 進場就是這個靜默吞掉
+            self._notify_anomaly("market_check_fail", err, cooldown_sec=1800)
             return False
 
     # ------------------------------------------------------------------
@@ -1687,8 +1721,14 @@ class AITradingBot:
                     avg_vol = kdf5["Volume"].iloc[:-1].mean()   # 排除今天，取前幾日均量
                     today_vol = float(df["Volume"].sum())
                     rvol = today_vol / avg_vol if avg_vol > 0 else 1.0
-            except Exception:
-                pass
+            except Exception as e:
+                # 節流通知：60 分鐘 cooldown。失敗時 rvol=1.0 < RVOL_MIN=1.5 → 該股被擋下，
+                # 但 bot 仍會掃其他股票，不像 check_market_trend 失敗那樣致命
+                self._notify_anomaly(
+                    "rvol_5min_fail",
+                    f"[RVOL] kbars 取得失敗（會 fallback 1.0，導致 RVOL 過濾擋下所有股票）: {type(e).__name__}: {e}",
+                    cooldown_sec=3600,
+                )
             print(f"  RVOL={rvol:.2f}（門檻={RVOL_MIN}）")
             if rvol < RVOL_MIN:
                 print(f"[動能/{stock_code}] 量能不足（RVOL={rvol:.2f} < {RVOL_MIN}），跳過。")
@@ -1710,8 +1750,14 @@ class AITradingBot:
                 kdf = pd.DataFrame(_shioaji_obj_to_dict(kb)).sort_values("ts")
                 atr_s = ta.atr(kdf["High"], kdf["Low"], kdf["Close"], length=14)
                 atr_val = float(atr_s.iloc[-1]) if atr_s is not None and not atr_s.empty else 0.0
-            except Exception:
-                pass
+            except Exception as e:
+                # 節流通知：60 分鐘 cooldown。失敗時 atr_val=0 → ATR_MAX_PCT 過濾不生效，
+                # 且 MA50 趨勢過濾因 kdf 為空也失效 → 該股可能繞過部分濾網
+                self._notify_anomaly(
+                    "daily_kbar_fail",
+                    f"[日K] kbars 取得失敗（會繞過 ATR 過熱保護 + MA50 趨勢過濾）: {type(e).__name__}: {e}",
+                    cooldown_sec=3600,
+                )
 
             # ── ATR 過熱保護（跳空缺口風險）────────────────────────────
             if atr_val > 0 and (atr_val / current_price) > ATR_MAX_PCT:
@@ -2661,6 +2707,20 @@ if __name__ == "__main__":
 
             if in_market:
                 print(f"\n[{now.strftime('%H:%M:%S')} +08:00] 交易時間掃描  部位：{list(bot.positions.keys()) or '無'}")
+
+                # 健康監控：大盤判斷連續失敗超過 1 小時 → 推 Telegram 警示
+                # 之前 5 天 0 進場就是 check_market_trend 每分鐘 raise 但靜默吞掉，
+                # 主迴圈不知道、用戶不知道。這道防線確保未來這類問題會主動報警。
+                _last_ok = getattr(bot, "_last_market_check_success", 0.0)
+                if _last_ok > 0:    # 0 表示還沒成功過一次（初始化中），跳過
+                    stale_sec = time.time() - _last_ok
+                    if stale_sec > 3600:    # 1 小時沒成功
+                        bot._notify_anomaly(
+                            "market_check_stale",
+                            f"bot 已連續 {int(stale_sec/60)} 分鐘無法判斷大盤趨勢，所有進場掃描會被跳過。\n"
+                            f"請檢查雲端 log 看 [大盤] 取得失敗原因（可能是 Shioaji API 變動）。",
+                            cooldown_sec=3600,
+                        )
 
                 # 定期重查 settlements()，確保賣出應收款及時反映至 TOTAL_BUDGET
                 if time.time() - last_budget_refresh >= BUDGET_REFRESH_INTERVAL:
