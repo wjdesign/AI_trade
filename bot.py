@@ -154,30 +154,83 @@ def _parse_simulation_env() -> bool:
     return False
 
 
+_SHIOAJI_OBJ_DIAG_PRINTED = False  # module-level flag，只印 1 次診斷避免雲端 log 爆量
+
+
 def _shioaji_obj_to_dict(obj) -> dict:
     """
     將 Shioaji 物件（KBars / Ticks）轉成 dict 給 pandas.DataFrame 使用。
-    Shioaji 1.5.0 移除了 .model_dump()，1.3.x 還有。
-    優先順序：model_dump → dict → __fields__ → 公開屬性逐一取值。
-    從 upstream sync (yinyaoqing/AI_trade)：解決雲端 (Shioaji 1.5.1) 跑
-    check_market_trend() 每次都 raise 「'KBars' object has no attribute 'model_dump'」
-    導致 bot 永遠認為大盤趨勢不對、整週 0 進場的 bug。
+    Shioaji 1.3.x: 有 model_dump()
+    Shioaji 1.5.x: 移除了 model_dump()，需 fallback。可能用 Pydantic v2、
+                   也可能是別的容器類型。各 Tier 依序嘗試。
+
+    若所有 Tier 都失敗或回傳空 dict，會印一次 [DIAG] 詳細 obj 結構，
+    給開發者抓 1.5.x 的實際介面。
     """
+    global _SHIOAJI_OBJ_DIAG_PRINTED
+
+    # Tier 1: Shioaji 1.3.x
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        try:
+            return obj.model_dump()
+        except Exception:
+            pass
+
+    # Tier 2: Pydantic v1 .dict()
     if hasattr(obj, "dict") and callable(obj.dict):
         try:
             return obj.dict()
         except Exception:
             pass
-    # Pydantic v2 / dataclass 風格
+
+    # Tier 3: Pydantic v2 model_fields
+    if hasattr(obj, "model_fields"):
+        try:
+            return {f: getattr(obj, f, None) for f in obj.model_fields}
+        except Exception:
+            pass
+
+    # Tier 4: Pydantic v1 __fields__
     if hasattr(obj, "__fields__"):
-        return {f: getattr(obj, f) for f in obj.__fields__}
-    # 一般物件：取所有公開非 callable 屬性
-    return {
-        a: getattr(obj, a) for a in dir(obj)
-        if not a.startswith("_") and not callable(getattr(obj, a, None))
-    }
+        try:
+            return {f: getattr(obj, f, None) for f in obj.__fields__}
+        except Exception:
+            pass
+
+    # Tier 5: 公開非 callable 屬性逐一取值
+    result = {}
+    for a in dir(obj):
+        if a.startswith("_"):
+            continue
+        try:
+            v = getattr(obj, a)
+        except Exception:
+            continue
+        if callable(v):
+            continue
+        result[a] = v
+
+    # 若 result 為空或顯然沒對齊 → 印 1 次診斷
+    expected_cols = {"ts", "Open", "High", "Low", "Close", "Volume"}
+    if not _SHIOAJI_OBJ_DIAG_PRINTED and (not result or not expected_cols & set(result.keys())):
+        _SHIOAJI_OBJ_DIAG_PRINTED = True
+        try:
+            type_name = type(obj).__name__
+            module = type(obj).__module__
+            attrs = [a for a in dir(obj) if not a.startswith("_")][:30]
+            print(f"[DIAG] _shioaji_obj_to_dict 無法解析 obj：")
+            print(f"  type     = {module}.{type_name}")
+            print(f"  attrs    = {attrs}")
+            print(f"  got keys = {list(result.keys())[:20]}")
+            # 試一些常見欄位
+            for sample_key in ("Close", "close", "ts", "ts_array", "Open"):
+                if hasattr(obj, sample_key):
+                    v = getattr(obj, sample_key, None)
+                    print(f"  {sample_key}: type={type(v).__name__}, len={len(v) if hasattr(v, '__len__') else 'n/a'}")
+        except Exception as e:
+            print(f"[DIAG] 印診斷時例外（忽略）: {e}")
+
+    return result
 
 
 def _business_days_between(start_date, end_date) -> int:
