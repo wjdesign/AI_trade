@@ -2281,23 +2281,40 @@ class AITradingBot:
         future_pay    = getattr(self, "_future_payable_cache", 0.0)
         strict_cap = acc_bal + future_recv + future_pay - pending_amt - today_buy_cost
 
-        # 三層保護：含券商 trading_limits（若可用）
-        # 從 upstream sync (yinyaoqing/AI_trade)：避免超過券商實際允許的買入額度
-        broker_cap = getattr(self, "_broker_buy_limit", None)
-        if broker_cap and broker_cap > 0:
-            broker_remaining = broker_cap - pending_amt - today_buy_cost
-            effective_cap = min(budget_cap, strict_cap, broker_remaining)
-            print(f"[掃描] 券商 trading_limits.limit_buy = {broker_cap:,.0f}，"
-                  f"扣除 pending/今日已買後 = {broker_remaining:,.0f}")
+        # 模擬戶限制：account_balance() / settlements() 都回 0
+        # → strict_cap = 0 → min(budget_cap, 0) = 0 → 永遠不下單
+        # 修補：模擬模式下跳過嚴格上限（沒有真實現金流可比對，靠 TOTAL_BUDGET 控制即可）
+        # 切正式戶後 acc_bal 會是真實值，strict_cap 自動恢復防違約交割功能。
+        if self._simulation:
+            broker_cap = getattr(self, "_broker_buy_limit", None)
+            if broker_cap and broker_cap > 0:
+                broker_remaining = broker_cap - pending_amt - today_buy_cost
+                effective_cap = min(budget_cap, broker_remaining)
+                print(f"[掃描] 券商 trading_limits.limit_buy = {broker_cap:,.0f}，"
+                      f"扣除 pending/今日已買後 = {broker_remaining:,.0f}")
+            else:
+                effective_cap = budget_cap
+            print(
+                f"[掃描] 預算上限 budget={budget_cap:,.0f}（模擬模式跳過嚴格上限 — "
+                f"acc/settlements 不支援會回 0，正式戶下自動恢復防違約交割保護）"
+                f"  → 採用 {effective_cap:,.0f}"
+            )
         else:
-            effective_cap = min(budget_cap, strict_cap)
-
-        print(
-            f"[掃描] 預算上限 budget={budget_cap:,.0f}  "
-            f"嚴格={strict_cap:,.0f}（acc {acc_bal:,.0f} + 應收 {future_recv:+,.0f} "
-            f"+ 應付 {future_pay:+,.0f} - 凍結 {pending_amt:,.0f} "
-            f"- 今日已買 {today_buy_cost:,.0f}）  → 採用 {effective_cap:,.0f}"
-        )
+            # 正式戶：三層保護完整生效
+            broker_cap = getattr(self, "_broker_buy_limit", None)
+            if broker_cap and broker_cap > 0:
+                broker_remaining = broker_cap - pending_amt - today_buy_cost
+                effective_cap = min(budget_cap, strict_cap, broker_remaining)
+                print(f"[掃描] 券商 trading_limits.limit_buy = {broker_cap:,.0f}，"
+                      f"扣除 pending/今日已買後 = {broker_remaining:,.0f}")
+            else:
+                effective_cap = min(budget_cap, strict_cap)
+            print(
+                f"[掃描] 預算上限 budget={budget_cap:,.0f}  "
+                f"嚴格={strict_cap:,.0f}（acc {acc_bal:,.0f} + 應收 {future_recv:+,.0f} "
+                f"+ 應付 {future_pay:+,.0f} - 凍結 {pending_amt:,.0f} "
+                f"- 今日已買 {today_buy_cost:,.0f}）  → 採用 {effective_cap:,.0f}"
+            )
 
         if effective_cap <= 0:
             print(f"[掃描] 可用預算 {effective_cap:,.0f} 已歸零，停止下單")
