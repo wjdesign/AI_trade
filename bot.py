@@ -233,6 +233,57 @@ def _shioaji_obj_to_dict(obj) -> dict:
     return result
 
 
+def _fetch_twse_kbars(code: str, days: int = 90) -> pd.DataFrame:
+    """從 TWSE 官方 STOCK_DAY API 抓日 K。對 GitHub Actions runner IP（Azure / AWS）
+    比 yfinance 穩定 — TWSE 對所有 IP 開放，yfinance / Yahoo Finance 對非美國 IP
+    經常 rate-limit 或 503。
+    一次抓一個月，跨月迴圈累積到所需天數。
+    回傳欄位跟 Shioaji KBars 一致：ts/Open/High/Low/Close/Volume/Amount。
+    """
+    end_dt = now_tw()
+    months_needed = max(2, (days // 30) + 2)
+
+    rows = []
+    for i in range(months_needed):
+        month_dt = end_dt - timedelta(days=i * 30)
+        date_str = month_dt.strftime("%Y%m") + "01"
+        url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY"
+        params = {"date": date_str, "stockNo": code, "response": "json"}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            if data.get("stat") != "OK":
+                continue
+            for row in data.get("data", []):
+                try:
+                    # row 格式：[日期, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數]
+                    date_str_tw = row[0].strip()
+                    y, m, d = date_str_tw.split("/")
+                    ts = pd.Timestamp(f"{int(y) + 1911}-{m.zfill(2)}-{d.zfill(2)}")
+                    rows.append({
+                        "ts":     ts,
+                        "Open":   float(row[3].replace(",", "")),
+                        "High":   float(row[4].replace(",", "")),
+                        "Low":    float(row[5].replace(",", "")),
+                        "Close":  float(row[6].replace(",", "")),
+                        "Volume": int(row[1].replace(",", "")) // 1000,  # 股 → 張
+                        "Amount": int(row[2].replace(",", "")),
+                    })
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[TWSE/{code}] 抓 {date_str[:6]} 失敗: {type(e).__name__}: {e}")
+            continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows).drop_duplicates(subset=["ts"]).sort_values("ts").reset_index(drop=True)
+    return df
+
+
 def _fetch_yfinance_kbars(code: str, days: int = 90) -> pd.DataFrame:
     """從 yfinance 抓台股日 K 作為 Shioaji 模擬戶 kbars() 不支援時的 fallback。
     Shioaji 1.5.x 模擬戶 api.kbars() 對所有 ticker 都回空 list（已驗證）。
@@ -1663,16 +1714,27 @@ class AITradingBot:
         except Exception as e:
             print(f"[_get_kbars_safe/{code}] Shioaji 失敗: {type(e).__name__}: {e}")
 
-        # Tier 2: yfinance fallback
+        # Tier 2: TWSE 官方 STOCK_DAY API（對 GitHub Actions Azure IP 比 yfinance 穩定）
+        if df.empty:
+            df = _fetch_twse_kbars(code, days=days)
+            if not df.empty:
+                print(f"[_get_kbars_safe/{code}] TWSE 拿到 {len(df)} 筆")
+                self._notify_anomaly(
+                    "kbars_external_fallback",
+                    f"Shioaji 模擬戶 kbars() 受限，bot 改用 TWSE 公開 API 取日 K（每天抓 1 次快取）。"
+                    f"切換正式戶後會優先用 Shioaji，這個訊息會消失。",
+                    cooldown_sec=86400,
+                )
+
+        # Tier 3: yfinance fallback（本機備援；GH Actions runner 常被擋）
         if df.empty:
             df = _fetch_yfinance_kbars(code, days=days)
             if not df.empty:
-                # 推一次性 Telegram 通知告知模擬戶 fallback 生效（30 分鐘冷卻）
+                print(f"[_get_kbars_safe/{code}] yfinance 拿到 {len(df)} 筆")
                 self._notify_anomaly(
-                    "kbars_yfinance_fallback",
-                    f"Shioaji 模擬戶 kbars() 受限，bot 自動 fallback yfinance（每天抓 1 次快取）。"
-                    f"切換正式戶後會優先用 Shioaji，這個訊息會消失。",
-                    cooldown_sec=86400,  # 一天 1 次提醒就夠
+                    "kbars_external_fallback",
+                    f"Shioaji 模擬戶 kbars() 受限，bot 改用 yfinance 取日 K（每天抓 1 次快取）。",
+                    cooldown_sec=86400,
                 )
 
         # 寫入快取（即使空也快取避免短時間反覆嘗試）
