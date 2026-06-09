@@ -1686,6 +1686,34 @@ class AITradingBot:
         return smoothed
 
     # ------------------------------------------------------------------
+    # 盤中 ticks 取得：Shioaji 優先（正式戶有 intraday），模擬戶 fallback 日 K
+    # 模擬戶下 api.ticks() 回空 list → ta.vwap() 回 None → .iloc[-1] raise。
+    # 用日 K 近似（VWAP/RSI 從日線算，雖然失真但能進場）。
+    # ------------------------------------------------------------------
+    def _get_intraday_or_daily(self, contract) -> pd.DataFrame:
+        """回傳 DataFrame for momentum/mean-reversion signal calculations.
+        index = datetime, columns = High/Low/Close/Volume/Open。
+        空 DataFrame 表示無法取得（呼叫端應 return None）。
+        """
+        # Tier 1: Shioaji ticks（正式戶有實時 intraday）
+        try:
+            ticks = self.api.ticks(contract, date=now_tw().strftime("%Y-%m-%d"))
+            df = ticks_to_df(ticks)
+            if not df.empty and len(df) >= 5:
+                return df
+        except Exception as e:
+            print(f"[ticks/{contract.code}] 失敗: {type(e).__name__}: {e}")
+
+        # Tier 2: 用日 K 近似（模擬戶 ticks 受限的妥協）
+        daily_df = self._get_kbars_safe(contract.code, days=30)
+        if daily_df.empty or len(daily_df) < 5:
+            return pd.DataFrame()
+        daily_df = daily_df.sort_values("ts").reset_index(drop=True).copy()
+        daily_df["datetime"] = pd.to_datetime(daily_df["ts"])
+        daily_df = daily_df.set_index("datetime")
+        return daily_df
+
+    # ------------------------------------------------------------------
     # 日 K 取得：Shioaji 優先（正式戶），失敗 fallback yfinance（模擬戶）
     # 24 小時記憶體快取，避免雲端 cron 每分鐘 68 次 yfinance 觸發 rate limit
     # ------------------------------------------------------------------
@@ -1871,10 +1899,16 @@ class AITradingBot:
             if not self.check_slippage_safe(contract):
                 return None
 
-            ticks = self.api.ticks(contract, date=now_tw().strftime("%Y-%m-%d"))
-            df = ticks_to_df(ticks)
-            vwap = ta.vwap(df["High"], df["Low"], df["Close"], df["Volume"]).iloc[-1]
-            current_price = df["Close"].iloc[-1]
+            df = self._get_intraday_or_daily(contract)
+            if df.empty:
+                return None
+            vwap_s = ta.vwap(df["High"], df["Low"], df["Close"], df["Volume"])
+            if vwap_s is None or vwap_s.empty:
+                # 日 K 太短時 vwap 可能算不出來；用 (H+L+C)/3 近似
+                vwap = float((df["High"].iloc[-1] + df["Low"].iloc[-1] + df["Close"].iloc[-1]) / 3)
+            else:
+                vwap = float(vwap_s.iloc[-1])
+            current_price = float(df["Close"].iloc[-1])
 
             # ── RSI 計算 ──────────────────────────────────────────────
             rsi_series = ta.rsi(df["Close"], length=14)
@@ -2003,9 +2037,10 @@ class AITradingBot:
             if not self.check_slippage_safe(contract):
                 return None
 
-            ticks = self.api.ticks(contract, date=now_tw().strftime("%Y-%m-%d"))
-            df    = ticks_to_df(ticks)
-            sig   = mean_reversion_signal(df, stock_code)
+            df = self._get_intraday_or_daily(contract)
+            if df.empty:
+                return None
+            sig = mean_reversion_signal(df, stock_code)
 
             print(f"[均值回歸/{stock_code}]  {sig.reason}")
             if sig.action != "BUY":

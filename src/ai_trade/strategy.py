@@ -38,29 +38,48 @@ _VOL_THRESHOLD = 0.18
 def detect_regime(api, lookback_days: int = 60) -> tuple[MarketRegime, float]:
     """
     取 0050 近 lookback_days 日 kbars，計算年化實現波動率。
-    回傳 (MarketRegime, vol_annualized)
+    回傳 (MarketRegime, vol_annualized)。
+
+    Shioaji 1.5.x 模擬戶 kbars() 受限會回空 list；用 bot 共用的
+    _shioaji_obj_to_dict + TWSE/yfinance fallback 鏈確保拿得到。
     """
     from datetime import datetime, timedelta, timezone
     TZ_TW = timezone(timedelta(hours=8))
     end   = datetime.now(TZ_TW).strftime("%Y-%m-%d")
     start = (datetime.now(TZ_TW) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
+    # 延遲 import 避免循環依賴（bot.py 已 import strategy）
+    from bot import _shioaji_obj_to_dict, _fetch_twse_kbars, _fetch_yfinance_kbars
+
+    df = pd.DataFrame()
+    # Tier 1: Shioaji
     try:
         contract = api.Contracts.Stocks["0050"]
         kbars = api.kbars(contract, start=start, end=end)
-        df = pd.DataFrame({**kbars.model_dump()}).sort_values("ts")
-        if len(df) < 10:
-            return MarketRegime.UNKNOWN, 0.0
-
-        df["ret"] = df["Close"].pct_change()
-        vol_daily = df["ret"].std()
-        vol_ann   = vol_daily * (252 ** 0.5)
-        regime    = MarketRegime.RANGING if vol_ann > _VOL_THRESHOLD else MarketRegime.TRENDING
-        return regime, round(vol_ann, 4)
-
+        df = pd.DataFrame(_shioaji_obj_to_dict(kbars))
+        if df.empty or "Close" not in df.columns or len(df) < 10:
+            df = pd.DataFrame()
     except Exception as e:
-        print(f"[策略] 市場狀態偵測失敗: {e}")
+        print(f"[策略] Shioaji kbars 失敗: {type(e).__name__}: {e}")
+
+    # Tier 2: TWSE
+    if df.empty:
+        df = _fetch_twse_kbars("0050", days=lookback_days)
+
+    # Tier 3: yfinance
+    if df.empty:
+        df = _fetch_yfinance_kbars("0050", days=lookback_days)
+
+    if df.empty or len(df) < 10:
+        print(f"[策略] 市場狀態偵測失敗：所有資料來源都拿不到 0050 日 K")
         return MarketRegime.UNKNOWN, 0.0
+
+    df = df.sort_values("ts")
+    df["ret"] = df["Close"].pct_change()
+    vol_daily = df["ret"].std()
+    vol_ann   = vol_daily * (252 ** 0.5)
+    regime    = MarketRegime.RANGING if vol_ann > _VOL_THRESHOLD else MarketRegime.TRENDING
+    return regime, round(vol_ann, 4)
 
 
 # ═══════════════════════════════════════════════════════════════
