@@ -1949,11 +1949,19 @@ class AITradingBot:
             rvol = 1.0
             try:
                 # 用日 K 近似 5 分鐘 RVOL（模擬戶 5min kbars 也受限）
-                # 拿前 5 個交易日的平均日成交量當基準
+                # 既然取得的是日 K，今日 / 平均成交量比較有意義
+                # bug 修補：原本 `today_vol = df["Volume"].sum()` 在 df 是 30 天日 K
+                #          fallback 時會變成「30 天總和」→ RVOL 數值膨脹（log 看到 RVOL=46~108）
+                #          改用 kdf5 最後一筆（最近交易日）當分子，過去 5 日均量當分母
                 kdf5 = self._get_kbars_safe(contract.code, days=14).sort_values("ts")
                 if len(kdf5) >= 2:
-                    avg_vol = kdf5["Volume"].iloc[-6:-1].mean() if len(kdf5) >= 6 else kdf5["Volume"].iloc[:-1].mean()
-                    today_vol = float(df["Volume"].sum())
+                    # 分母：過去 5 日均量（不含最後一筆，避免分母包含分子）
+                    if len(kdf5) >= 6:
+                        avg_vol = float(kdf5["Volume"].iloc[-6:-1].mean())
+                    else:
+                        avg_vol = float(kdf5["Volume"].iloc[:-1].mean())
+                    # 分子：最近交易日成交量（盤中通常是昨日收盤，因 TWSE 日 K 收盤後才更新）
+                    today_vol = float(kdf5["Volume"].iloc[-1])
                     rvol = today_vol / avg_vol if avg_vol > 0 else 1.0
             except Exception as e:
                 # 節流通知：60 分鐘 cooldown。失敗時 rvol=1.0 < RVOL_MIN=1.5 → 該股被擋下，
