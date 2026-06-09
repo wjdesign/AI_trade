@@ -233,6 +233,50 @@ def _shioaji_obj_to_dict(obj) -> dict:
     return result
 
 
+def _fetch_yfinance_kbars(code: str, days: int = 90) -> pd.DataFrame:
+    """從 yfinance 抓台股日 K 作為 Shioaji 模擬戶 kbars() 不支援時的 fallback。
+    Shioaji 1.5.x 模擬戶 api.kbars() 對所有 ticker 都回空 list（已驗證）。
+    回傳欄位跟 Shioaji KBars 一致：ts/Open/High/Low/Close/Volume/Amount，
+    呼叫端可直接做 pd.DataFrame() 風格的處理。
+    抓不到回空 DataFrame，讓上層自行 fallback。
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return pd.DataFrame()
+
+    end_dt = now_tw()
+    start_dt = end_dt - timedelta(days=days)
+    end_str = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")  # yfinance end 為排他
+    start_str = start_dt.strftime("%Y-%m-%d")
+
+    raw = pd.DataFrame()
+    for suffix in (".TW", ".TWO"):
+        ticker = f"{code}{suffix}"
+        try:
+            raw = yf.download(ticker, start=start_str, end=end_str,
+                              auto_adjust=True, progress=False)
+            if not raw.empty:
+                break
+        except Exception:
+            continue
+
+    if raw.empty:
+        return pd.DataFrame()
+
+    # 攤平 yfinance >= 0.2 的 MultiIndex
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+
+    # Normalize 到 Shioaji KBars schema
+    raw = raw.reset_index()
+    raw = raw.rename(columns={"Date": "ts"})
+    if "Amount" not in raw.columns:
+        raw["Amount"] = 0.0
+    cols = ["ts", "Open", "High", "Low", "Close", "Volume", "Amount"]
+    return raw[[c for c in cols if c in raw.columns]]
+
+
 def _business_days_between(start_date, end_date) -> int:
     """計算兩日期間的工作天數（不含週末，不考慮國定假日）"""
     if start_date >= end_date:
@@ -771,6 +815,9 @@ class AITradingBot:
         # 大盤健康監控：check_market_trend() 上次成功的時間
         # 主迴圈會檢查 stale time，超過閾值推 Telegram 警示
         self._last_market_check_success: float = 0.0
+        # 日 K 快取：key=code, value=(timestamp, df)。24 小時內不重抓
+        # Shioaji 模擬戶 kbars() 受限，需要 yfinance fallback；快取避免 rate limit
+        self._kbar_cache: dict[str, tuple[float, "pd.DataFrame"]] = {}
 
         # 註冊 Shioaji 委託 / 成交即時回呼
         self._register_order_callback()
@@ -1588,6 +1635,51 @@ class AITradingBot:
         return smoothed
 
     # ------------------------------------------------------------------
+    # 日 K 取得：Shioaji 優先（正式戶），失敗 fallback yfinance（模擬戶）
+    # 24 小時記憶體快取，避免雲端 cron 每分鐘 68 次 yfinance 觸發 rate limit
+    # ------------------------------------------------------------------
+    def _get_kbars_safe(self, code: str, days: int = 90) -> pd.DataFrame:
+        """取得 code 的日 K DataFrame。欄位：ts / Open / High / Low / Close / Volume / Amount。
+        順序：記憶體快取 → Shioaji api.kbars() → yfinance fallback。
+        24 小時快取（雲端 cron 一天跑一次足夠）。
+        """
+        # 快取命中
+        cache_entry = self._kbar_cache.get(code)
+        if cache_entry is not None:
+            ts, df = cache_entry
+            if time.time() - ts < 86400 and not df.empty:
+                return df
+
+        df = pd.DataFrame()
+        # Tier 1: Shioaji
+        try:
+            contract = self.api.Contracts.Stocks[code]
+            end_date   = now_tw().strftime("%Y-%m-%d")
+            start_date = (now_tw() - timedelta(days=days)).strftime("%Y-%m-%d")
+            kbars = self.api.kbars(contract, start=start_date, end=end_date)
+            df = pd.DataFrame(_shioaji_obj_to_dict(kbars))
+            if df.empty or "Close" not in df.columns or len(df) < 5:
+                df = pd.DataFrame()  # 視為失敗，走 fallback
+        except Exception as e:
+            print(f"[_get_kbars_safe/{code}] Shioaji 失敗: {type(e).__name__}: {e}")
+
+        # Tier 2: yfinance fallback
+        if df.empty:
+            df = _fetch_yfinance_kbars(code, days=days)
+            if not df.empty:
+                # 推一次性 Telegram 通知告知模擬戶 fallback 生效（30 分鐘冷卻）
+                self._notify_anomaly(
+                    "kbars_yfinance_fallback",
+                    f"Shioaji 模擬戶 kbars() 受限，bot 自動 fallback yfinance（每天抓 1 次快取）。"
+                    f"切換正式戶後會優先用 Shioaji，這個訊息會消失。",
+                    cooldown_sec=86400,  # 一天 1 次提醒就夠
+                )
+
+        # 寫入快取（即使空也快取避免短時間反覆嘗試）
+        self._kbar_cache[code] = (time.time(), df)
+        return df
+
+    # ------------------------------------------------------------------
     # 異常通知節流器：避免每分鐘失敗都推 Telegram 轟炸用戶
     # ------------------------------------------------------------------
     def _notify_anomaly(self, key: str, msg: str, cooldown_sec: int = 1800) -> None:
@@ -1613,10 +1705,7 @@ class AITradingBot:
         """回傳 ATR-based 股數（風險均等化），上限為固定預算所能買到的最大股數"""
         fallback = max(int(POSITION_SIZE / current_price), 1)
         try:
-            end_date   = now_tw().strftime("%Y-%m-%d")
-            start_date = (now_tw() - timedelta(days=60)).strftime("%Y-%m-%d")
-            kbars = self.api.kbars(contract, start=start_date, end=end_date)
-            df = pd.DataFrame(_shioaji_obj_to_dict(kbars)).sort_values("ts")
+            df = self._get_kbars_safe(contract.code, days=60).sort_values("ts")
             if len(df) < 15:
                 return fallback
             atr = ta.atr(df["High"], df["Low"], df["Close"], length=14).iloc[-1]
@@ -1647,13 +1736,10 @@ class AITradingBot:
         介於之間維持上次判斷，避免每分鐘翻轉。
         """
         try:
-            contract = self.api.Contracts.Stocks[MARKET_INDEX]
-            kbars = self.api.kbars(
-                contract,
-                start=(now_tw() - timedelta(days=90)).strftime("%Y-%m-%d"),
-                end=now_tw().strftime("%Y-%m-%d"),
-            )
-            df = pd.DataFrame(_shioaji_obj_to_dict(kbars)).set_index("ts").sort_index()
+            df = self._get_kbars_safe(MARKET_INDEX, days=90)
+            if df.empty or len(df) < 20:
+                raise RuntimeError(f"kbars for {MARKET_INDEX} 不足 20 筆（Shioaji + yfinance 都拿不到）")
+            df = df.set_index("ts").sort_index()
             ma20 = df["Close"].rolling(20).mean().iloc[-1]
             current = df["Close"].iloc[-1]
 
@@ -1766,12 +1852,11 @@ class AITradingBot:
             # ── 相對成交量 RVOL（Gemini 建議 1）─────────────────────
             rvol = 1.0
             try:
-                end_d   = now_tw().strftime("%Y-%m-%d")
-                start_d = (now_tw() - timedelta(days=7)).strftime("%Y-%m-%d")
-                kb5 = self.api.kbars(contract, start=start_d, end=end_d)
-                kdf5 = pd.DataFrame(_shioaji_obj_to_dict(kb5)).sort_values("ts")
+                # 用日 K 近似 5 分鐘 RVOL（模擬戶 5min kbars 也受限）
+                # 拿前 5 個交易日的平均日成交量當基準
+                kdf5 = self._get_kbars_safe(contract.code, days=14).sort_values("ts")
                 if len(kdf5) >= 2:
-                    avg_vol = kdf5["Volume"].iloc[:-1].mean()   # 排除今天，取前幾日均量
+                    avg_vol = kdf5["Volume"].iloc[-6:-1].mean() if len(kdf5) >= 6 else kdf5["Volume"].iloc[:-1].mean()
                     today_vol = float(df["Volume"].sum())
                     rvol = today_vol / avg_vol if avg_vol > 0 else 1.0
             except Exception as e:
@@ -1799,10 +1884,10 @@ class AITradingBot:
             atr_val = 0.0
             kdf = pd.DataFrame()
             try:
-                kb  = self.api.kbars(contract, start=start_d, end=end_d)
-                kdf = pd.DataFrame(_shioaji_obj_to_dict(kb)).sort_values("ts")
-                atr_s = ta.atr(kdf["High"], kdf["Low"], kdf["Close"], length=14)
-                atr_val = float(atr_s.iloc[-1]) if atr_s is not None and not atr_s.empty else 0.0
+                kdf = self._get_kbars_safe(contract.code, days=60).sort_values("ts")
+                if not kdf.empty and len(kdf) >= 15:
+                    atr_s = ta.atr(kdf["High"], kdf["Low"], kdf["Close"], length=14)
+                    atr_val = float(atr_s.iloc[-1]) if atr_s is not None and not atr_s.empty else 0.0
             except Exception as e:
                 # 節流通知：60 分鐘 cooldown。失敗時 atr_val=0 → ATR_MAX_PCT 過濾不生效，
                 # 且 MA50 趨勢過濾因 kdf 為空也失效 → 該股可能繞過部分濾網
