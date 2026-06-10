@@ -362,9 +362,11 @@ bot 要動真錢必須**同時**通過 3 道檢查，任一失敗都會 fallback
 
 **理由**：第一週只用 1 檔測試，最壞虧損 11,500 × 3% ≈ NT$ 345（單筆）。
 
-### 階段 4：設定 GitHub Secrets（2 個）
+### 階段 4：設定 GitHub Secrets（2 個）+ 清除模擬測試用 Variables
 
-到 `https://github.com/wjdesign/AI_trade/settings/secrets/actions` → New repository secret：
+到 `https://github.com/wjdesign/AI_trade/settings/secrets/actions`：
+
+#### 4-A. Secrets tab → New repository secret
 
 - [ ] **Secret 1**：
   - Name: `SIMULATION`
@@ -375,6 +377,17 @@ bot 要動真錢必須**同時**通過 3 道檢查，任一失敗都會 fallback
 
 複製貼上時注意：**前後不能有空白、不能有換行**。
 
+#### 4-B. Variables tab → 移除模擬戶測試專用 Variable（重要！）
+
+- [ ] 找到 `SKIP_MARKET_FILTER` → 改值為 `false`（或直接刪除這個 Variable）
+
+**為什麼必須做**：`SKIP_MARKET_FILTER=true` 是模擬戶在 TWSE 0050 收盤後資料 stale 時、為了讓 bot 跑得動而暫時開的後門 — 它會**完全跳過大盤 MA20 過濾**。正式交易絕對不能跳過大盤過濾：
+- 大盤跌破月線 → 通常是系統性風險，個股動能訊號的勝率會崩
+- 沒大盤過濾 = bot 在熊市仍照樣進場 → 連續虧損
+- 5 年回測 (2330) 顯示 MA50 趨勢過濾把最大回撤從 -43% 降到 -19%
+
+如果你想保留這個 Variable 方便日後切回模擬測試，**值改成 `false` 就好**（不要刪），轉模擬時再改回 `true`。
+
 ### 階段 5：手動觸發驗證（不要等隔天 cron）
 
 - [ ] Actions → AI Trade Bot → **Run workflow** → main → Run
@@ -384,6 +397,7 @@ bot 要動真錢必須**同時**通過 3 道檢查，任一失敗都會 fallback
   [初始化] 🔴 交易模式：正式交易（simulation=False，動用真實資金！）
   [初始化] ============================================================
   ```
+- [ ] 確認 `[Debug]` 段「實際生效值」中 `SKIP_MARKET_FILTER : False` — 若顯示 `True` 立刻 cancel workflow，回到階段 4-B 把 Variable 改成 `false`
 - [ ] **如果看到「⚠️ [防呆機制觸發] ... fallback 到模擬交易」** → 3 道保險其中一道沒過：
   - 檢查 1：`SIMULATION` Secret 值是 `false`（不是 `False` 不是 `0`）
   - 檢查 2：`CONFIRM_REAL_MONEY` 值精確 = `I_KNOW_THIS_IS_REAL_MONEY`

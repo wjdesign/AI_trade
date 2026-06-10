@@ -619,9 +619,34 @@ def sentiment_label(score: float) -> str:
 # 4. 核心交易邏輯
 # =============================================================================
 
+def _get_git_sha() -> str:
+    """取 git commit SHA（短）。雲端 GitHub Actions 用 GITHUB_SHA env var；
+    本機 fallback 讀 .git/HEAD。"""
+    # 雲端
+    sha = os.environ.get("GITHUB_SHA", "").strip()
+    if sha:
+        return sha[:7]
+    # 本機 fallback
+    try:
+        head_file = Path(__file__).parent / ".git" / "HEAD"
+        if head_file.exists():
+            ref = head_file.read_text(encoding="utf-8").strip()
+            if ref.startswith("ref: "):
+                ref_path = Path(__file__).parent / ".git" / ref[5:]
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()[:7]
+            return ref[:7]
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _debug_env() -> None:
     """啟動時印出環境變數摘要（敏感值遮蔽），協助診斷 GitHub Actions 問題"""
     import base64
+
+    git_sha = _get_git_sha()
+    print(f"[Debug] Git commit: {git_sha}  ← 雲端跑的就是這個版本，若 bug 對應的 commit 已 merge，這裡應該顯示對應 SHA")
 
     def mask(v: str, show: int = 2) -> str:
         """敏感資料遮蔽：露頭 show + 尾 show 個字元，其餘用 *** 取代。
@@ -660,11 +685,12 @@ def _debug_env() -> None:
     # ── 策略參數（GitHub Variables；未設則 bot.py 內 fallback 預設值）──
     # 每個參數附「用途說明」，方便看 log 時無需翻文件就懂
     strategy_vars = [
-        ("MAX_POSITIONS",     "最多同時持有部位數"),
-        ("TOTAL_BUDGET",      "總可用資金（元）"),
-        ("STOP_LOSS_PCT",     "強制止損% (與 1.5×ATR 取嚴格者)"),
-        ("MIN_ORDER_VALUE",   "最小下單金額（元，避免手續費侵蝕）"),
-        ("SENTIMENT_ENABLED", "AI 新聞情緒分析開關 (需 OpenAI API)"),
+        ("MAX_POSITIONS",      "最多同時持有部位數"),
+        ("TOTAL_BUDGET",       "總可用資金（元）"),
+        ("STOP_LOSS_PCT",      "強制止損% (與 1.5×ATR 取嚴格者)"),
+        ("MIN_ORDER_VALUE",    "最小下單金額（元，避免手續費侵蝕）"),
+        ("SENTIMENT_ENABLED",  "AI 新聞情緒分析開關 (需 OpenAI API)"),
+        ("SKIP_MARKET_FILTER", "跳過大盤 0050/MA20 過濾（模擬戶測試用）"),
     ]
     print("[Debug] ── 策略參數（GitHub Variables）─────────────")
     for k, desc in strategy_vars:
@@ -673,11 +699,12 @@ def _debug_env() -> None:
 
     # ── bot.py 實際生效值（重要：這才是 bot 真的用的值）──────
     actual_values = [
-        ("MAX_POSITIONS",     str(MAX_POSITIONS),       "最多同時持有部位數"),
-        ("TOTAL_BUDGET",      f"{TOTAL_BUDGET:,}",      "總可用資金（元）"),
-        ("STOP_LOSS_PCT",     f"{STOP_LOSS_PCT}",       f"強制止損 ({STOP_LOSS_PCT:.1%})"),
-        ("MIN_ORDER_VALUE",   f"{MIN_ORDER_VALUE:,}",   "最小下單金額（元）"),
-        ("SENTIMENT_ENABLED", str(SENTIMENT_ENABLED),   "AI 新聞情緒分析開關"),
+        ("MAX_POSITIONS",      str(MAX_POSITIONS),        "最多同時持有部位數"),
+        ("TOTAL_BUDGET",       f"{TOTAL_BUDGET:,}",       "總可用資金（元）"),
+        ("STOP_LOSS_PCT",      f"{STOP_LOSS_PCT}",        f"強制止損 ({STOP_LOSS_PCT:.1%})"),
+        ("MIN_ORDER_VALUE",    f"{MIN_ORDER_VALUE:,}",    "最小下單金額（元）"),
+        ("SENTIMENT_ENABLED",  str(SENTIMENT_ENABLED),    "AI 新聞情緒分析開關"),
+        ("SKIP_MARKET_FILTER", str(SKIP_MARKET_FILTER),   "True=跳過大盤過濾（模擬戶測試用）"),
     ]
     print("[Debug] ── 實際生效值 ──────────────────────────────")
     for name, val, desc in actual_values:
