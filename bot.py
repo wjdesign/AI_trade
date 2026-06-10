@@ -372,6 +372,11 @@ POSITION_SIZE = _calc_position_size(TOTAL_BUDGET)
 
 # Phase 1 優化參數
 SENTIMENT_ENABLED  = _env_bool("SENTIMENT_ENABLED", False)   # 新聞情緒評分開關。可透過環境變數覆蓋（"true" 或 "false"）
+# 模擬戶限制：TWSE 日 K 收盤後才更新 → bot 整天用「昨日收盤」判斷大盤
+# 0050 跟 MA20 差距常常 < 0.5% → 遲滯帶內隨機決定 → 整天卡在「趨勢偏弱」
+# 開啟此開關直接跳過大盤過濾，讓 bot 任何時候都掃個股（適合模擬測試 / 觀察 bot 行為）
+# 正式戶下不建議開啟（大盤過濾是保護資金的關鍵）
+SKIP_MARKET_FILTER = _env_bool("SKIP_MARKET_FILTER", False)
 SENTIMENT_SMOOTH_N = 3      # 1.1 情緒平滑：保留最近 N 次分數取均值
 RISK_PER_TRADE     = TOTAL_BUDGET * STOP_LOSS_PCT   # 1.2 ATR 動態部位：每筆承擔最大損失 (元)
 RSI_OVERBOUGHT     = 70                             # 1.3 RSI 超買門檻：超過不進場
@@ -1825,6 +1830,13 @@ class AITradingBot:
         突破 MA20×1.001 → 轉多；跌破 MA20×0.999 → 轉空。
         介於之間維持上次判斷，避免每分鐘翻轉。
         """
+        # SKIP_MARKET_FILTER=true 時直接視為「趨勢向上」
+        # 用於模擬戶 — TWSE 日 K 收盤後才更新，盤中拿到的是昨日收盤
+        # 0050 vs MA20 差 < 0.5% 時遲滯帶內隨機決定，整天卡在「趨勢偏弱」
+        if SKIP_MARKET_FILTER:
+            self._market_trend_up = True
+            self._last_market_check_success = time.time()
+            return True
         try:
             df = self._get_kbars_safe(MARKET_INDEX, days=90)
             if df.empty or len(df) < 20:
