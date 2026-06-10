@@ -1011,6 +1011,16 @@ class AITradingBot:
                             pos.trail_price = avg_price * (1 + TRAILING_START)
                             if pos.atr > 0:
                                 pos.stop_price = max(avg_price - 1.5 * pos.atr, pos.stop_price)
+                            send_notify(
+                                f"[✅ 買進成交] {code}\n"
+                                f"成交：{total_qty}股 @ {avg_price:.2f}（總額 {total_qty * avg_price:,.0f}元）\n"
+                                f"止損：{pos.stop_price:.2f}  止盈啟動：{pos.trail_price:.2f}"
+                            )
+                        elif pending["action"] == "Sell":
+                            send_notify(
+                                f"[✅ 賣出成交] {code}\n"
+                                f"成交：{total_qty}股 @ {avg_price:.2f}（總額 {total_qty * avg_price:,.0f}元）"
+                            )
                         self._pending_orders.pop(code, None)
                         self._pending_sell_positions.pop(code, None)
                         self._deal_buffer.pop(ordno, None)
@@ -2166,6 +2176,19 @@ class AITradingBot:
 
         # 確認成交：以實際成交價格/數量建立部位
         fill = self._confirm_fill(c.code, "Buy")
+
+        # 交易所拒單（status=Failed）→ 撤銷整個下單流程
+        # 不寫 trade log、不建立部位、不推誤導的「⏳ 尚未成交」訊息，並清 pending 釋放 slot
+        if fill and "Failed" in fill.get("status", ""):
+            print(f"[買進] {c.code} 交易所拒單（{fill['status']}），不建立部位")
+            self._pending_orders.pop(c.code, None)
+            send_notify(
+                f"[❌ 買進拒單] {c.code}\n"
+                f"委託：{c.qty}股 @ {c.price}\n"
+                f"狀態：{fill['status']}（可能因該股無報價/漲跌停/盤後等原因被交易所拒絕）"
+            )
+            return
+
         actual_price = fill["deal_price"] if fill and fill["deal_qty"] > 0 else c.price
         actual_qty   = fill["deal_qty"]   if fill and fill["deal_qty"] > 0 else c.qty
 
