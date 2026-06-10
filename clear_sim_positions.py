@@ -27,6 +27,13 @@ import os
 import sys
 import time
 
+# Windows PowerShell 預設 cp950，無法輸出 emoji / 部分 unicode → 強制 UTF-8
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 import shioaji as sj
 from dotenv import load_dotenv
 
