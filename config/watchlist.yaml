@@ -96,7 +96,7 @@ pinned:
 
   # ── Wayne 自選新增 2026-06-10（盤中觀察，未經回測）─────────
   - { code: "2327", name: "國巨",     industry: "被動元件（MLCC）" }
-  - { code: "8932", name: "智通",     industry: "Wayne 指定名稱（請與 Sinopac 確認；TWSE 公開資料顯示 8932 為宏全）" }
+  - { code: "8932", name: "智通*",    industry: "上櫃；* 為 Sinopac 異常代號標記" }
   - { code: "7909", name: "鈺祥",     industry: "燃料電池/特用化學" }
   - { code: "1605", name: "華新",     industry: "電線電纜/銅箔基板" }
   - { code: "2344", name: "華邦電",   industry: "記憶體（DRAM/Flash）" }
