@@ -412,9 +412,9 @@ FUNNEL_MAX_RESULTS = 5    # 漏斗最多取幾檔加入當日監控清單
 # 改清單方式：編輯 config/watchlist.yaml + commit + push（不用動 bot.py）
 # 完整 schema 說明見該 yaml 檔頂部註解
 # ─────────────────────────────────────────────────────────────
-def _load_watchlist() -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]:
+def _load_watchlist() -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str], dict[str, str]]:
     """從 config/watchlist.yaml 載入監控清單。
-    回傳 (pinned, candidates, long_term_hold)。
+    回傳 (pinned, candidates, long_term_hold, stock_names)。
     yaml 不存在或 schema 錯誤 → 立刻 raise，不要靜默回空（會讓 bot 沒監控標的）。
     """
     yaml_path = Path(__file__).parent / "config" / "watchlist.yaml"
@@ -426,12 +426,17 @@ def _load_watchlist() -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]
     with yaml_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
+    stock_names: dict[str, str] = {}
+
     def _extract_codes(section: str) -> list[str]:
         items = data.get(section, []) or []
         codes = []
         for item in items:
             if isinstance(item, dict) and "code" in item:
-                codes.append(str(item["code"]))
+                code = str(item["code"])
+                codes.append(code)
+                if "name" in item and item["name"]:
+                    stock_names[code] = str(item["name"])
             elif isinstance(item, str):
                 codes.append(item)
             else:
@@ -445,10 +450,16 @@ def _load_watchlist() -> tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]
         f"[配置] watchlist.yaml 載入完成："
         f"pinned={len(pinned)}、candidates={len(candidates)}、long_term_hold={len(long_term_hold)}"
     )
-    return pinned, candidates, long_term_hold
+    return pinned, candidates, long_term_hold, stock_names
 
 
-PINNED_STOCKS, CANDIDATE_STOCKS, LONG_TERM_HOLD = _load_watchlist()
+PINNED_STOCKS, CANDIDATE_STOCKS, LONG_TERM_HOLD, STOCK_NAMES = _load_watchlist()
+
+
+def stock_label(code: str) -> str:
+    """股號 + 名稱（Telegram 訊息用）；watchlist.yaml 無 name 時退回純股號。"""
+    name = STOCK_NAMES.get(code, "")
+    return f"{code} {name}" if name else code
 
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 tg_token   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -1012,13 +1023,13 @@ class AITradingBot:
                             if pos.atr > 0:
                                 pos.stop_price = max(avg_price - 1.5 * pos.atr, pos.stop_price)
                             send_notify(
-                                f"[✅ 買進成交] {code}\n"
+                                f"[✅ 買進成交] {stock_label(code)}\n"
                                 f"成交：{total_qty}股 @ {avg_price:.2f}（總額 {total_qty * avg_price:,.0f}元）\n"
                                 f"止損：{pos.stop_price:.2f}  止盈啟動：{pos.trail_price:.2f}"
                             )
                         elif pending["action"] == "Sell":
                             send_notify(
-                                f"[✅ 賣出成交] {code}\n"
+                                f"[✅ 賣出成交] {stock_label(code)}\n"
                                 f"成交：{total_qty}股 @ {avg_price:.2f}（總額 {total_qty * avg_price:,.0f}元）"
                             )
                         self._pending_orders.pop(code, None)
@@ -2183,7 +2194,7 @@ class AITradingBot:
             print(f"[買進] {c.code} 交易所拒單（{fill['status']}），不建立部位")
             self._pending_orders.pop(c.code, None)
             send_notify(
-                f"[❌ 買進拒單] {c.code}\n"
+                f"[❌ 買進拒單] {stock_label(c.code)}\n"
                 f"委託：{c.qty}股 @ {c.price}\n"
                 f"狀態：{fill['status']}（可能因該股無報價/漲跌停/盤後等原因被交易所拒絕）"
             )
@@ -2219,7 +2230,7 @@ class AITradingBot:
         elif fill and fill["deal_qty"] == 0:
             fill_note = "\n⏳ 尚未成交，待後續確認"
         send_notify(
-            f"[{tag}] {c.code}\n"
+            f"[{tag}] {stock_label(c.code)}\n"
             f"委託: {c.price} x {c.qty}股\n"
             f"VWAP: {c.vwap:.2f}  RSI: {c.rsi:.1f}  法人: {c.chip_score:+.2f}\n"
             f"止損價: {stop_p:.2f}  止盈啟動: {trail_p:.2f}\n"
@@ -2551,7 +2562,7 @@ class AITradingBot:
         elif fill and fill["deal_qty"] == 0:
             fill_note = "\n⏳ 尚未成交，待後續確認"
         send_notify(
-            f"[賣出] {code}  {reason}\n"
+            f"[賣出] {stock_label(code)}  {reason}\n"
             f"委託: {price} x {qty}股\n"
             f"成本: {pos.entry_price}  獲利: {profit_pct:+.2%}\n"
             f"淨損益: {net_pnl:+.0f} 元"
@@ -2763,13 +2774,18 @@ class AITradingBot:
                     if trade_obj is not None:
                         self.api.cancel_order(trade_obj)
                         print(f"[委託追蹤] {act_str} {code} 超過 {PENDING_ORDER_TIMEOUT}s 未成交，已送出取消")
-                        send_notify(
-                            f"[委託逾時取消] ⏱️ {code}\n"
-                            f"{act_str} {info['qty']}股 @ {info['price']}  金額 {info['amount']:,.0f} 元\n"
-                            f"持續 {age:.0f} 秒未成交，已自動撤單"
-                        )
+                        # 只在第一次推 Telegram，避免下輪 sync 又進這分支重複 spam 用戶
+                        # （cancel_order 對交易所重發無害，但 Telegram 推 N 次會洗版）
+                        if not info.get("timeout_notified"):
+                            send_notify(
+                                f"[委託逾時取消] ⏱️ {stock_label(code)}\n"
+                                f"{act_str} {info['qty']}股 @ {info['price']}  金額 {info['amount']:,.0f} 元\n"
+                                f"持續 {age:.0f} 秒未成交，已自動撤單"
+                            )
+                            info["timeout_notified"] = True
                         # 不在這裡 resolved.append → 等 callback Cancelled 事件處理
-                        # 若 callback 漏接，下一輪 sync 仍會嘗試取消（重複 cancel 無害）
+                        # 若 callback 漏接，下一輪 sync 仍會嘗試 cancel（cancel 重發無害，
+                        # 但 Telegram 已用 timeout_notified flag 去重）
                     else:
                         # 沒有 trade 物件就無法撤單，只能清除追蹤
                         print(f"[委託追蹤] {act_str} {code} 超時但無 trade 物件，強制解除凍結")
