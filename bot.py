@@ -2975,6 +2975,14 @@ class AITradingBot:
         summary = self.daily_summary()
         print(f"\n{summary}")
         send_notify(summary)
+        # ── 每日收盤分隔線：方便翻 Telegram 紀錄一眼分辨交易日 ──
+        _wd_zh = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][now_tw().weekday()]
+        send_notify(
+            f"═════════════════════\n"
+            f"📅 {now_tw().strftime('%Y-%m-%d')} ({_wd_zh})\n"
+            f"🔴 交易日結束\n"
+            f"═════════════════════"
+        )
         self.api.logout()
         print("[系統] 已登出")
 
@@ -3016,6 +3024,15 @@ if __name__ == "__main__":
     print("[啟動] 檢查遺留委託...")
     order_check_result = bot.startup_order_check()
     print(order_check_result)
+
+    # ── 每日開盤分隔線：方便翻 Telegram 紀錄一眼分辨交易日 ──
+    _wd_zh = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"][now_tw().weekday()]
+    send_notify(
+        f"═════════════════════\n"
+        f"📅 {now_tw().strftime('%Y-%m-%d')} ({_wd_zh})\n"
+        f"🟢 交易日開始\n"
+        f"═════════════════════"
+    )
 
     send_notify(
         f"[AI Trade 啟動]\n"
