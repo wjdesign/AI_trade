@@ -159,6 +159,7 @@ jobs:
           MIN_ORDER_VALUE:      ${{ vars.MIN_ORDER_VALUE   || '' }}  # 預設 11000
           SENTIMENT_ENABLED:    ${{ vars.SENTIMENT_ENABLED || '' }}  # 預設 false
           SKIP_MARKET_FILTER:   ${{ vars.SKIP_MARKET_FILTER || '' }}  # 預設 false；模擬戶測試時設 true 跳過大盤過濾
+          PENDING_ORDER_TIMEOUT: ${{ vars.PENDING_ORDER_TIMEOUT || '' }}  # 預設 600 秒（10分鐘）；零股流動性低可調 1800（30分鐘）
           # HTTPS_PROXY: 選填，若需要 Proxy 才能連 Telegram，請在 Secrets 加入後取消此行註解
           # HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }}
         run: python bot.py

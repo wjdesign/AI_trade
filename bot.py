@@ -395,7 +395,7 @@ MARKET_INDEX       = "0050"  # 大盤指數代碼（主板用 0050，中小型�
 
 SCAN_INTERVAL           = 60    # 主循環間隔（秒）
 NEWS_DIGEST_INTERVAL    = 1800  # 非交易時間新聞推播間隔（秒）
-PENDING_ORDER_TIMEOUT   = 600   # 委託逾時自動撤單（秒）：超過此時間未成交則向交易所送出取消
+PENDING_ORDER_TIMEOUT   = _env_int("PENDING_ORDER_TIMEOUT", 600)   # 委託逾時自動撤單（秒）：超過此時間未成交則向交易所送出取消
 BUDGET_REFRESH_INTERVAL = 600   # 預算重查間隔（秒）：每 N 秒重查 settlements() 並推播
 STATUS_REPORT_INTERVAL  = 1800  # 部位狀態推播間隔（秒）：每 N 秒推播委託 + 部位狀態
 
@@ -696,12 +696,13 @@ def _debug_env() -> None:
     # ── 策略參數（GitHub Variables；未設則 bot.py 內 fallback 預設值）──
     # 每個參數附「用途說明」，方便看 log 時無需翻文件就懂
     strategy_vars = [
-        ("MAX_POSITIONS",      "最多同時持有部位數"),
-        ("TOTAL_BUDGET",       "總可用資金（元）"),
-        ("STOP_LOSS_PCT",      "強制止損% (與 1.5×ATR 取嚴格者)"),
-        ("MIN_ORDER_VALUE",    "最小下單金額（元，避免手續費侵蝕）"),
-        ("SENTIMENT_ENABLED",  "AI 新聞情緒分析開關 (需 OpenAI API)"),
-        ("SKIP_MARKET_FILTER", "跳過大盤 0050/MA20 過濾（模擬戶測試用）"),
+        ("MAX_POSITIONS",         "最多同時持有部位數"),
+        ("TOTAL_BUDGET",          "總可用資金（元）"),
+        ("STOP_LOSS_PCT",         "強制止損% (與 1.5×ATR 取嚴格者)"),
+        ("MIN_ORDER_VALUE",       "最小下單金額（元，避免手續費侵蝕）"),
+        ("SENTIMENT_ENABLED",     "AI 新聞情緒分析開關 (需 OpenAI API)"),
+        ("SKIP_MARKET_FILTER",    "跳過大盤 0050/MA20 過濾（模擬戶測試用）"),
+        ("PENDING_ORDER_TIMEOUT", "委託逾時自動撤單秒數（零股流動性低可調 1800+）"),
     ]
     print("[Debug] ── 策略參數（GitHub Variables）─────────────")
     for k, desc in strategy_vars:
@@ -710,12 +711,13 @@ def _debug_env() -> None:
 
     # ── bot.py 實際生效值（重要：這才是 bot 真的用的值）──────
     actual_values = [
-        ("MAX_POSITIONS",      str(MAX_POSITIONS),        "最多同時持有部位數"),
-        ("TOTAL_BUDGET",       f"{TOTAL_BUDGET:,}",       "總可用資金（元）"),
-        ("STOP_LOSS_PCT",      f"{STOP_LOSS_PCT}",        f"強制止損 ({STOP_LOSS_PCT:.1%})"),
-        ("MIN_ORDER_VALUE",    f"{MIN_ORDER_VALUE:,}",    "最小下單金額（元）"),
-        ("SENTIMENT_ENABLED",  str(SENTIMENT_ENABLED),    "AI 新聞情緒分析開關"),
-        ("SKIP_MARKET_FILTER", str(SKIP_MARKET_FILTER),   "True=跳過大盤過濾（模擬戶測試用）"),
+        ("MAX_POSITIONS",         str(MAX_POSITIONS),                "最多同時持有部位數"),
+        ("TOTAL_BUDGET",          f"{TOTAL_BUDGET:,}",               "總可用資金（元）"),
+        ("STOP_LOSS_PCT",         f"{STOP_LOSS_PCT}",                f"強制止損 ({STOP_LOSS_PCT:.1%})"),
+        ("MIN_ORDER_VALUE",       f"{MIN_ORDER_VALUE:,}",            "最小下單金額（元）"),
+        ("SENTIMENT_ENABLED",     str(SENTIMENT_ENABLED),            "AI 新聞情緒分析開關"),
+        ("SKIP_MARKET_FILTER",    str(SKIP_MARKET_FILTER),           "True=跳過大盤過濾（模擬戶測試用）"),
+        ("PENDING_ORDER_TIMEOUT", f"{PENDING_ORDER_TIMEOUT} 秒",     f"委託逾時自動撤單（{PENDING_ORDER_TIMEOUT//60} 分鐘）"),
     ]
     print("[Debug] ── 實際生效值 ──────────────────────────────")
     for name, val, desc in actual_values:
