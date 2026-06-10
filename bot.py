@@ -2240,9 +2240,11 @@ class AITradingBot:
                 hrs, mins = divmod(int(remain) // 60, 60)
                 print(f"[{code}] 賣出冷卻中（剩 {hrs}時{mins}分），跳過。")
                 continue
+            # 單檔 budget 一律給 POSITION_SIZE（與動能策略 get_atr_qty 一致）
+            # 策略佔比由排序階段的 prior 權重 ×0.90/×1.10 體現，不從金額壓制 —
+            # 否則均值回歸只拿 POSITION_SIZE × 20% = 2,300 元，永遠過不了 MIN_ORDER_VALUE 門檻。
             if alloc.regime == MarketRegime.RANGING:
-                mr_budget = POSITION_SIZE * alloc.mean_reversion_budget_pct
-                c = self._eval_mean_reversion(code, mr_budget)
+                c = self._eval_mean_reversion(code, POSITION_SIZE)
                 if c:
                     candidates.append(c)
                 # 盤整市仍允許動能策略作補充
@@ -2254,8 +2256,7 @@ class AITradingBot:
                 if c:
                     candidates.append(c)
                 # 趨勢市也收集均值回歸作補充
-                mr_budget = POSITION_SIZE * alloc.mean_reversion_budget_pct
-                c2 = self._eval_mean_reversion(code, mr_budget)
+                c2 = self._eval_mean_reversion(code, POSITION_SIZE)
                 if c2:
                     candidates.append(c2)
 
