@@ -3108,6 +3108,9 @@ if __name__ == "__main__":
                         f"[策略] 已佔 {active_slots} 檔（持倉 {len(bot.positions)} "
                         f"+ 待買 {pending_buys} + 待賣 {pending_sells}，上限 {MAX_POSITIONS}），跳過進場掃描。"
                     )
+                    # 滿倉時 check_market_trend 不會被呼叫，但 bot 健康無虞 →
+                    # 重置 watchdog 時間戳，避免誤觸「60 分鐘無法判斷大盤」警示
+                    bot._last_market_check_success = time.time()
                     time.sleep(SCAN_INTERVAL)
                     continue
 
@@ -3116,6 +3119,8 @@ if __name__ == "__main__":
                 # （monitor_exit 仍正常執行，止損保護不受影響）
                 if now.hour == 9 and now.minute < 20:
                     print(f"[策略] 早盤過濾（{now.strftime('%H:%M')} < 09:20），跳過進場掃描")
+                    # 早盤過濾期間 check_market_trend 不會被呼叫 → 同滿倉處理
+                    bot._last_market_check_success = time.time()
                     time.sleep(SCAN_INTERVAL)
                     continue
 
