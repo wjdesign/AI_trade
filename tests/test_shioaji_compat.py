@@ -92,6 +92,7 @@ class LoginCompatibilityTests(unittest.TestCase):
         self.assertEqual(api.calls, [{"api_key": "key", "secret_key": "secret"}])
         self.assertTrue(logged_warnings)
         self.assertIn("不支援參數", logged_warnings[0])
+        self.assertNotIn("contracts_cb", api.calls[0])
 
 
 if __name__ == "__main__":

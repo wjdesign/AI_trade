@@ -15,7 +15,7 @@ def login_with_compatible_kwargs(
     secret_key: str,
     fetch_contract: bool | object = _UNSET,
     contracts_timeout: int | object = _UNSET,
-    contracts_cb: Callable[[str], None] | object = _UNSET,
+    contracts_cb: Callable[..., None] | object = _UNSET,
     logger: Callable[[str], None] | None = None,
 ) -> Any:
     """Call ``api.login`` while tolerating Shioaji keyword changes."""
@@ -69,5 +69,8 @@ def login_with_compatible_kwargs(
         if kwargs == base_kwargs or not optional_kwargs:
             raise
         if logger:
-            logger("[初始化] login() 參數與目前 Shioaji 版本不相容，改用基本登入參數重試。")
+            logger(
+                "[初始化] login() 參數與目前 Shioaji 版本不相容，改用基本登入參數重試："
+                f"{exc}"
+            )
         return api.login(**base_kwargs)
