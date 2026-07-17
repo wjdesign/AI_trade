@@ -15,7 +15,7 @@ def login_with_compatible_kwargs(
     secret_key: str,
     fetch_contract: bool | object = _UNSET,
     contracts_timeout: int | object = _UNSET,
-    contracts_cb: Callable[[Any], None] | object = _UNSET,
+    contracts_cb: Callable[[str], None] | object = _UNSET,
     logger: Callable[[str], None] | None = None,
 ) -> Any:
     """Call ``api.login`` while tolerating Shioaji keyword changes."""
@@ -34,18 +34,20 @@ def login_with_compatible_kwargs(
 
     kwargs = dict(base_kwargs)
     unsupported: list[str] = []
+    inspection_failed = False
 
     try:
         parameters = inspect.signature(api.login).parameters
     except (TypeError, ValueError):
         parameters = {}
+        inspection_failed = True
 
     accepts_var_kwargs = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
 
-    if accepts_var_kwargs or not parameters:
+    if accepts_var_kwargs or inspection_failed:
         kwargs.update(optional_kwargs)
     else:
         for name, value in optional_kwargs.items():

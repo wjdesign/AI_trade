@@ -73,7 +73,7 @@ class LoginCompatibilityTests(unittest.TestCase):
                 return kwargs
 
         api = FakeAPI()
-        messages: list[str] = []
+        logged_warnings: list[str] = []
 
         def callback(*_: object) -> None:
             pass
@@ -85,13 +85,13 @@ class LoginCompatibilityTests(unittest.TestCase):
             fetch_contract=True,
             contracts_timeout=30000,
             contracts_cb=callback,
-            logger=messages.append,
+            logger=logged_warnings.append,
         )
 
         self.assertEqual(result, {"api_key": "key", "secret_key": "secret"})
         self.assertEqual(api.calls, [{"api_key": "key", "secret_key": "secret"}])
-        self.assertTrue(messages)
-        self.assertIn("不支援參數", messages[0])
+        self.assertTrue(logged_warnings)
+        self.assertIn("不支援參數", logged_warnings[0])
 
 
 if __name__ == "__main__":
