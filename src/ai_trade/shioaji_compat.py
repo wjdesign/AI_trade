@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
-_UNSET = object()
+_UNSET_SENTINEL = object()
 
 
 def login_with_compatible_kwargs(
@@ -13,9 +13,9 @@ def login_with_compatible_kwargs(
     *,
     api_key: str,
     secret_key: str,
-    fetch_contract: bool | object = _UNSET,
-    contracts_timeout: int | object = _UNSET,
-    contracts_cb: Callable[..., None] | object = _UNSET,
+    fetch_contract: bool | object = _UNSET_SENTINEL,
+    contracts_timeout: int | object = _UNSET_SENTINEL,
+    contracts_cb: Callable[..., None] | object = _UNSET_SENTINEL,
     logger: Callable[[str], None] | None = None,
 ) -> Any:
     """Call ``api.login`` while tolerating Shioaji keyword changes."""
@@ -29,7 +29,7 @@ def login_with_compatible_kwargs(
         "contracts_cb": contracts_cb,
     }
     optional_kwargs = {
-        k: v for k, v in requested_optional_kwargs.items() if v is not _UNSET
+        k: v for k, v in requested_optional_kwargs.items() if v is not _UNSET_SENTINEL
     }
 
     kwargs = dict(base_kwargs)
@@ -43,7 +43,7 @@ def login_with_compatible_kwargs(
         inspection_failed = True
 
     accepts_var_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
 
@@ -68,6 +68,8 @@ def login_with_compatible_kwargs(
     except TypeError as exc:
         if kwargs == base_kwargs or not optional_kwargs:
             raise
+        # Safety net for Shioaji builds where signature inspection is incomplete
+        # but the runtime still rejects legacy keyword arguments.
         if logger:
             logger(
                 "[初始化] login() 參數與目前 Shioaji 版本不相容，改用基本登入參數重試："

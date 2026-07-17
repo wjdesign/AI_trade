@@ -5,6 +5,10 @@ import unittest
 from src.ai_trade.shioaji_compat import login_with_compatible_kwargs
 
 
+def _callback(*_: object) -> None:
+    pass
+
+
 class LoginCompatibilityTests(unittest.TestCase):
     def test_passes_optional_login_kwargs_when_supported(self) -> None:
         class FakeAPI:
@@ -25,21 +29,18 @@ class LoginCompatibilityTests(unittest.TestCase):
                     "contracts_cb": contracts_cb,
                 }
 
-        def callback(*_: object) -> None:
-            pass
-
         result = login_with_compatible_kwargs(
             FakeAPI(),
             api_key="key",
             secret_key="secret",
             fetch_contract=True,
             contracts_timeout=30000,
-            contracts_cb=callback,
+            contracts_cb=_callback,
         )
 
         self.assertTrue(result["fetch_contract"])
         self.assertEqual(result["contracts_timeout"], 30000)
-        self.assertIs(result["contracts_cb"], callback)
+        self.assertIs(result["contracts_cb"], _callback)
 
     def test_preserves_explicit_false_optional_kwargs(self) -> None:
         class FakeAPI:
@@ -59,7 +60,7 @@ class LoginCompatibilityTests(unittest.TestCase):
 
         self.assertFalse(result["fetch_contract"])
 
-    def test_ignores_unsupported_login_kwargs_when_running_newer_shioaji(self) -> None:
+    def test_drops_unsupported_kwargs_on_newer_api(self) -> None:
         class FakeAPI:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
@@ -75,16 +76,13 @@ class LoginCompatibilityTests(unittest.TestCase):
         api = FakeAPI()
         logged_warnings: list[str] = []
 
-        def callback(*_: object) -> None:
-            pass
-
         result = login_with_compatible_kwargs(
             api,
             api_key="key",
             secret_key="secret",
             fetch_contract=True,
             contracts_timeout=30000,
-            contracts_cb=callback,
+            contracts_cb=_callback,
             logger=logged_warnings.append,
         )
 
