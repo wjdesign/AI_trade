@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
-_UNSET_SENTINEL = object()
+UNSET_SENTINEL = object()
 
 
 def login_with_compatible_kwargs(
@@ -13,9 +13,9 @@ def login_with_compatible_kwargs(
     *,
     api_key: str,
     secret_key: str,
-    fetch_contract: bool | object = _UNSET_SENTINEL,
-    contracts_timeout: int | object = _UNSET_SENTINEL,
-    contracts_cb: Callable[..., None] | object = _UNSET_SENTINEL,
+    fetch_contract: bool | object = UNSET_SENTINEL,
+    contracts_timeout: int | object = UNSET_SENTINEL,
+    contracts_cb: Callable[..., None] | object = UNSET_SENTINEL,
     logger: Callable[[str], None] | None = None,
 ) -> Any:
     """Call ``api.login`` while tolerating Shioaji keyword changes."""
@@ -29,7 +29,7 @@ def login_with_compatible_kwargs(
         "contracts_cb": contracts_cb,
     }
     optional_kwargs = {
-        k: v for k, v in requested_optional_kwargs.items() if v is not _UNSET_SENTINEL
+        k: v for k, v in requested_optional_kwargs.items() if v is not UNSET_SENTINEL
     }
 
     kwargs = dict(base_kwargs)

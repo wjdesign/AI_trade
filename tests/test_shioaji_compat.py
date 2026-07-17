@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Callable
 
 from src.ai_trade.shioaji_compat import login_with_compatible_kwargs
 
@@ -19,7 +20,7 @@ class LoginCompatibilityTests(unittest.TestCase):
                 secret_key: str,
                 fetch_contract: bool,
                 contracts_timeout: int,
-                contracts_cb,
+                contracts_cb: Callable[..., None],
             ):
                 return {
                     "api_key": api_key,
