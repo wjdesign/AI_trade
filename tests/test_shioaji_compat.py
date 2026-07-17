@@ -26,7 +26,7 @@ class LoginCompatibilityTests(unittest.TestCase):
                 }
 
         def callback(*_: object) -> None:
-            return None
+            pass
 
         result = login_with_compatible_kwargs(
             FakeAPI(),
@@ -40,6 +40,24 @@ class LoginCompatibilityTests(unittest.TestCase):
         self.assertTrue(result["fetch_contract"])
         self.assertEqual(result["contracts_timeout"], 30000)
         self.assertIs(result["contracts_cb"], callback)
+
+    def test_preserves_explicit_false_optional_kwargs(self) -> None:
+        class FakeAPI:
+            def login(self, *, api_key: str, secret_key: str, fetch_contract: bool):
+                return {
+                    "api_key": api_key,
+                    "secret_key": secret_key,
+                    "fetch_contract": fetch_contract,
+                }
+
+        result = login_with_compatible_kwargs(
+            FakeAPI(),
+            api_key="key",
+            secret_key="secret",
+            fetch_contract=False,
+        )
+
+        self.assertFalse(result["fetch_contract"])
 
     def test_ignores_unsupported_login_kwargs_when_running_newer_shioaji(self) -> None:
         class FakeAPI:
@@ -58,7 +76,7 @@ class LoginCompatibilityTests(unittest.TestCase):
         messages: list[str] = []
 
         def callback(*_: object) -> None:
-            return None
+            pass
 
         result = login_with_compatible_kwargs(
             api,

@@ -5,15 +5,17 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
+_UNSET = object()
+
 
 def login_with_compatible_kwargs(
     api: Any,
     *,
     api_key: str,
     secret_key: str,
-    fetch_contract: bool | None = None,
-    contracts_timeout: int | None = None,
-    contracts_cb: Callable[[Any], None] | None = None,
+    fetch_contract: bool | object = _UNSET,
+    contracts_timeout: int | object = _UNSET,
+    contracts_cb: Callable[[Any], None] | object = _UNSET,
     logger: Callable[[str], None] | None = None,
 ) -> Any:
     """Call ``api.login`` while tolerating Shioaji keyword changes."""
@@ -21,12 +23,14 @@ def login_with_compatible_kwargs(
         "api_key": api_key,
         "secret_key": secret_key,
     }
-    optional_kwargs = {
+    requested_optional_kwargs = {
         "fetch_contract": fetch_contract,
         "contracts_timeout": contracts_timeout,
         "contracts_cb": contracts_cb,
     }
-    optional_kwargs = {k: v for k, v in optional_kwargs.items() if v is not None}
+    optional_kwargs = {
+        k: v for k, v in requested_optional_kwargs.items() if v is not _UNSET
+    }
 
     kwargs = dict(base_kwargs)
     unsupported: list[str] = []
