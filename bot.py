@@ -48,6 +48,7 @@ from src.ai_trade.strategy import (                                      # 3.2 �
     StrategyAllocator, mean_reversion_signal, MarketRegime, AllocationResult
 )
 from src.ai_trade.scanner import FunnelScanner                          # 漏斗掃描器
+from src.ai_trade.shioaji_compat import login_with_compatible_kwargs
 
 load_dotenv()
 
@@ -782,7 +783,8 @@ class AITradingBot:
         # APISUB/V1/SYS/CONTRACT concurrent 衝突。timeout=0 為非阻塞，這裡用 30 秒等候。
         # 從 upstream sync (yinyaoqing/AI_trade)：解決 GitHub Actions 雲端 runner 跑
         # fetch_contracts 100% 失敗（"exclusive access lost (concurrent API call started)"）的問題。
-        accounts = self.api.login(
+        accounts = login_with_compatible_kwargs(
+            self.api,
             api_key=api_key,
             secret_key=secret_key,
             fetch_contract=True,
@@ -790,6 +792,7 @@ class AITradingBot:
             contracts_cb=lambda security_type: print(
                 f"[初始化][contracts_cb] {security_type} 載入完成"
             ),
+            logger=print,
         )
         print(f"[初始化] 登入回應：{accounts}")
 
