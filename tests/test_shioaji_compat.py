@@ -25,7 +25,9 @@ class LoginCompatibilityTests(unittest.TestCase):
                     "contracts_cb": contracts_cb,
                 }
 
-        callback = lambda *_: None
+        def callback(*_: object) -> None:
+            return None
+
         result = login_with_compatible_kwargs(
             FakeAPI(),
             api_key="key",
@@ -55,13 +57,16 @@ class LoginCompatibilityTests(unittest.TestCase):
         api = FakeAPI()
         messages: list[str] = []
 
+        def callback(*_: object) -> None:
+            return None
+
         result = login_with_compatible_kwargs(
             api,
             api_key="key",
             secret_key="secret",
             fetch_contract=True,
             contracts_timeout=30000,
-            contracts_cb=lambda *_: None,
+            contracts_cb=callback,
             logger=messages.append,
         )
 

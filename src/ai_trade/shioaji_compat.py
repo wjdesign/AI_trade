@@ -39,7 +39,7 @@ def login_with_compatible_kwargs(
     accepts_var_kwargs = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
-    ) if parameters else False
+    )
 
     if accepts_var_kwargs or not parameters:
         kwargs.update(optional_kwargs)
@@ -60,7 +60,7 @@ def login_with_compatible_kwargs(
     try:
         return api.login(**kwargs)
     except TypeError as exc:
-        if not any(f"unexpected keyword argument '{name}'" in str(exc) for name in optional_kwargs):
+        if kwargs == base_kwargs or not optional_kwargs:
             raise
         if logger:
             logger("[初始化] login() 參數與目前 Shioaji 版本不相容，改用基本登入參數重試。")
