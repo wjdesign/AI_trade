@@ -9,6 +9,7 @@ AI 模擬交易機器人
 - 部署：GitHub Actions 自動執行 + Artifacts 跨 run 備份還原 logs/
 """
 
+import inspect
 import math
 import os
 import sys
@@ -752,6 +753,54 @@ def _debug_env() -> None:
 
 
 class AITradingBot:
+    def _login_with_contracts(self, api_key: str, secret_key: str):
+        """登入 + 下載合約，相容新舊 Shioaji 簽名。
+
+        - Shioaji 1.3.2 ~ 1.6.x：login(fetch_contract=True, contracts_timeout=N,
+          contracts_cb=...) 一次完成登入 + 合約下載。contracts_timeout 讓 login 阻塞
+          等合約載完，避免後續另打 fetch_contracts 觸發 APISUB/V1/SYS/CONTRACT
+          concurrent 衝突（GitHub Actions runner 上 100% 失敗：
+          "exclusive access lost (concurrent API call started)"）。
+        - Shioaji 1.7.0+：login() 移除了那三個參數，合約下載改回獨立的
+          fetch_contracts()。這裡偵測簽名後走對應路徑，未來放寬 requirements 上界
+          升到 1.7+ 時，程式不會再拋 TypeError。
+
+        requirements.txt / pyproject.toml 目前仍鎖 shioaji<1.7，正常情況走舊路
+        （不碰 1.7 fetch_contracts 的 concurrent 風險）；此相容分支是升版時的保險。
+        """
+        def _contracts_cb(security_type):
+            print(f"[初始化][contracts_cb] {security_type} 載入完成")
+
+        try:
+            login_params = inspect.signature(self.api.login).parameters
+        except (ValueError, TypeError):
+            login_params = {}
+
+        if "fetch_contract" in login_params:
+            # 舊簽名（<1.7）：登入時一併下載合約
+            print("[初始化] 偵測到 login 支援 fetch_contract → 登入即下載合約")
+            return self.api.login(
+                api_key=api_key,
+                secret_key=secret_key,
+                fetch_contract=True,
+                contracts_timeout=30000,
+                contracts_cb=_contracts_cb,
+            )
+
+        # 新簽名（1.7+）：login 不含合約參數，改用獨立 fetch_contracts()
+        print("[初始化] login 無 fetch_contract 參數（Shioaji 1.7+）→ 登入後另呼叫 fetch_contracts")
+        accounts = self.api.login(api_key=api_key, secret_key=secret_key)
+        try:
+            self.api.fetch_contracts(
+                contract_download=True,
+                contracts_timeout=30000,
+                contracts_cb=_contracts_cb,
+            )
+        except Exception as e:
+            # 合約沒載成功不在此中斷；__init__ 後續的抽樣驗證會把關並給明確錯誤
+            print(f"[初始化] fetch_contracts 失敗（交由後續抽樣驗證把關）: {type(e).__name__}: {e}")
+        return accounts
+
     def __init__(self):
         _debug_env()
 
@@ -777,20 +826,7 @@ class AITradingBot:
         secret_key = os.environ["SECRET_KEY"].strip()
 
         print(f"[初始化] 嘗試登入（API_KEY 長度={len(api_key)}，SECRET_KEY 長度={len(secret_key)}）")
-        # login(fetch_contract=True, contracts_timeout=N) 一次完成登入 + 合約下載
-        # contracts_timeout 讓 login 阻塞等待合約完整載入，避免後續打 fetch_contracts 觸發
-        # APISUB/V1/SYS/CONTRACT concurrent 衝突。timeout=0 為非阻塞，這裡用 30 秒等候。
-        # 從 upstream sync (yinyaoqing/AI_trade)：解決 GitHub Actions 雲端 runner 跑
-        # fetch_contracts 100% 失敗（"exclusive access lost (concurrent API call started)"）的問題。
-        accounts = self.api.login(
-            api_key=api_key,
-            secret_key=secret_key,
-            fetch_contract=True,
-            contracts_timeout=30000,
-            contracts_cb=lambda security_type: print(
-                f"[初始化][contracts_cb] {security_type} 載入完成"
-            ),
-        )
+        accounts = self._login_with_contracts(api_key, secret_key)
         print(f"[初始化] 登入回應：{accounts}")
 
         # 檢查合約是否已透過 login 載入（避免重複下載觸發 concurrent 衝突）
