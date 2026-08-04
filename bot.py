@@ -393,6 +393,7 @@ VWAP_MAX_GAP       = 0.03    # VWAP 乖離率上限：現價超過 VWAP 3% 視�
 ATR_MAX_PCT        = 0.03    # ATR 過熱保護：ATR/股價 > 3% 視為跳空風險過高，不進場
 MA_TREND_PERIOD    = 50      # 趨勢過濾均線：個股現價需在 MA50 之上才進場（回測驗證有效）
 MARKET_INDEX       = "0050"  # 大盤指數代碼（主板用 0050，中小型股可改 0051）
+KBAR_MAX_DAYS      = 28      # kbars 單次查詢最大天數：Shioaji 限制不得超過 30 天，留 2 天安全邊際
 
 SCAN_INTERVAL           = 60    # 主循環間隔（秒）
 NEWS_DIGEST_INTERVAL    = 1800  # 非交易時間新聞推播間隔（秒）
@@ -1805,6 +1806,57 @@ class AITradingBot:
         return daily_df
 
     # ------------------------------------------------------------------
+    # Shioaji 日 K 組裝：分段抓 1 分 K → resample 成真正的日線
+    # ------------------------------------------------------------------
+    def _shioaji_daily_kbars(self, contract, days: int) -> pd.DataFrame:
+        """用 Shioaji api.kbars 組出「日 K」，欄位對齊 TWSE/yfinance tier。
+
+        api.kbars 只回 1 分 K，且單次查詢不得超過 30 天。若直接
+        `pd.DataFrame(_shioaji_obj_to_dict(kbars))` 會把 1 分 K 當日 K 用，
+        導致 ATR(length=14) 變成「14 分鐘」、MA50 變成「50 分鐘」、RVOL 失真。
+        因此：
+          1. 把 days 天切成多段（每段 ≤ KBAR_MAX_DAYS 天）分別抓取
+          2. 合併後 resample 成日 K（OHLCV，Amount 有則加總）
+        回傳欄位與 _fetch_twse_kbars / _fetch_yfinance_kbars 一致：
+        ts / Open / High / Low / Close / Volume / (Amount)，扁平且以 ts 排序。
+        （移植自 joseph/AI_trade 的 _daily_kbars；此處併入既有 _get_kbars_safe 快取層）
+        """
+        end_d = now_tw().date()
+        start_d = end_d - timedelta(days=days)
+
+        frames = []
+        seg_end = end_d
+        while seg_end >= start_d:
+            seg_start = max(seg_end - timedelta(days=KBAR_MAX_DAYS - 1), start_d)
+            try:
+                kb = self.api.kbars(
+                    contract,
+                    start=seg_start.strftime("%Y-%m-%d"),
+                    end=seg_end.strftime("%Y-%m-%d"),
+                )
+                seg = pd.DataFrame(_shioaji_obj_to_dict(kb))
+                if not seg.empty and "ts" in seg.columns:
+                    frames.append(seg)
+            except Exception:
+                pass  # 某段失敗（如整段皆假日）不影響其餘段
+            seg_end = seg_start - timedelta(days=1)
+
+        if not frames:
+            return pd.DataFrame()
+
+        m = pd.concat(frames, ignore_index=True)
+        m["datetime"] = pd.to_datetime(m["ts"])
+        m = m.set_index("datetime").sort_index()
+        m = m[~m.index.duplicated(keep="last")]   # 去除分段邊界可能的重複分鐘
+
+        agg = {"Open": "first", "High": "max", "Low": "min",
+               "Close": "last", "Volume": "sum"}
+        if "Amount" in m.columns:
+            agg["Amount"] = "sum"
+        daily = m.resample("1D").agg(agg).dropna(subset=["Close"])   # 丟掉週末/假日空列
+        return daily.reset_index().rename(columns={"datetime": "ts"})
+
+    # ------------------------------------------------------------------
     # 日 K 取得：Shioaji 優先（正式戶），失敗 fallback yfinance（模擬戶）
     # 24 小時記憶體快取，避免雲端 cron 每分鐘 68 次 yfinance 觸發 rate limit
     # ------------------------------------------------------------------
@@ -1821,13 +1873,11 @@ class AITradingBot:
                 return df
 
         df = pd.DataFrame()
-        # Tier 1: Shioaji
+        # Tier 1: Shioaji（api.kbars 只回 1 分 K 且單次 ≤ 30 天
+        #          → _shioaji_daily_kbars 分段抓取後 resample 成真正的日 K）
         try:
             contract = self.api.Contracts.Stocks[code]
-            end_date   = now_tw().strftime("%Y-%m-%d")
-            start_date = (now_tw() - timedelta(days=days)).strftime("%Y-%m-%d")
-            kbars = self.api.kbars(contract, start=start_date, end=end_date)
-            df = pd.DataFrame(_shioaji_obj_to_dict(kbars))
+            df = self._shioaji_daily_kbars(contract, days)
             if df.empty or "Close" not in df.columns or len(df) < 5:
                 df = pd.DataFrame()  # 視為失敗，走 fallback
         except Exception as e:
